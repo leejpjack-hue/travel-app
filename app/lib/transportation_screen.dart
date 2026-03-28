@@ -31,7 +31,7 @@ class _TransportationPlanningScreenState extends State<TransportationPlanningScr
   Future<void> _loadTransportationModes() async {
     try {
       final response = await http.get(
-        Uri.parse('http://localhost:6006/api/trips/${widget.tripId}/transportation-modes'),
+        Uri.parse('/api/trips/${widget.tripId}/transportation-modes'),
         headers: {'Content-Type': 'application/json'},
       );
 
@@ -52,7 +52,7 @@ class _TransportationPlanningScreenState extends State<TransportationPlanningScr
   Future<void> _loadOptimizations() async {
     try {
       final response = await http.get(
-        Uri.parse('http://localhost:6006/api/trips/${widget.tripId}/route-optimizations'),
+        Uri.parse('/api/trips/${widget.tripId}/route-optimizations'),
         headers: {'Content-Type': 'application/json'},
       );
 
@@ -75,7 +75,7 @@ class _TransportationPlanningScreenState extends State<TransportationPlanningScr
 
     try {
       final response = await http.post(
-        Uri.parse('http://localhost:6006/api/trips/${widget.tripId}/transportation-modes'),
+        Uri.parse('/api/trips/${widget.tripId}/transportation-modes'),
         headers: {'Content-Type': 'application/json'},
         body: json.encode({
           'name': modeNameController.text,
@@ -108,7 +108,7 @@ class _TransportationPlanningScreenState extends State<TransportationPlanningScr
       });
 
       final response = await http.post(
-        Uri.parse('http://localhost:6006/api/trips/${widget.tripId}/route-optimization'),
+        Uri.parse('/api/trips/${widget.tripId}/route-optimization'),
         headers: {'Content-Type': 'application/json'},
         body: json.encode({
           'algorithm': 'nearest_neighbor',

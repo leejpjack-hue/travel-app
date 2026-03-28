@@ -32,7 +32,7 @@ class _SharedFundScreenState extends State<SharedFundScreen> {
     
     try {
       final response = await http.get(
-        Uri.parse('http://167.179.88.55:6006/api/trips/${widget.tripId}/splits'),
+        Uri.parse('/api/trips/${widget.tripId}/splits'),
         headers: {
           'Content-Type': 'application/json',
           // Add authentication header if needed
@@ -69,7 +69,7 @@ class _SharedFundScreenState extends State<SharedFundScreen> {
 
     try {
       final response = await http.post(
-        Uri.parse('http://167.179.88.55:6006/api/trips/${widget.tripId}/splits'),
+        Uri.parse('/api/trips/${widget.tripId}/splits'),
         headers: {
           'Content-Type': 'application/json',
         },
@@ -160,7 +160,7 @@ class _SharedFundScreenState extends State<SharedFundScreen> {
               if (form!.validate()) {
                 try {
                   final response = await http.post(
-                    Uri.parse('http://167.179.88.55:6006/api/trips/${widget.tripId}/splits/$splitId/items'),
+                    Uri.parse('/api/trips/${widget.tripId}/splits/$splitId/items'),
                     headers: {
                       'Content-Type': 'application/json',
                     },
@@ -554,7 +554,7 @@ class _SharedFundScreenState extends State<SharedFundScreen> {
   Future<void> _settleSplit(String splitId) async {
     try {
       final response = await http.post(
-        Uri.parse('http://167.179.88.55:6006/api/trips/${widget.tripId}/splits/$splitId/settle'),
+        Uri.parse('/api/trips/${widget.tripId}/splits/$splitId/settle'),
         headers: {
           'Content-Type': 'application/json',
         },

@@ -980,8 +980,6 @@ function insertDefaultExpenseCategories() {
   `);
 }
 
-}
-
 console.log('🚗 Module 5: In-Trip Execution tables created/verified');
 console.log('🎯 Module 6: Export & AI tables created/verified');
 

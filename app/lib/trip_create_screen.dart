@@ -56,7 +56,7 @@ class _TripCreateScreenState extends State<TripCreateScreen> {
     });
 
     try {
-      final url = Uri.parse('http://167.179.88.55:6006/api/trips');
+      final url = Uri.parse('/api/trips');
       final response = await http.post(
         url,
         headers: {

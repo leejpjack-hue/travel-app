@@ -5,7 +5,7 @@ import fs from 'fs';
 import { initializeDatabase, getDatabase, generateUUID } from './database';
 import { createUser, findUserByEmail, verifyPassword, getCurrentUser, generateToken } from './auth';
 const app = express();
-const PORT = process.env.PORT || 6006;
+const PORT = process.env.PORT || 5005;
 
 // Initialize database on startup
 initializeDatabase();

@@ -38,7 +38,7 @@ class _POIScreenState extends State<POIScreen> {
       // Load custom pins
       final pinsResponse = await _makeRequest(
         'GET',
-        'http://localhost:6006/api/trips/${widget.tripId}/custom-pins'
+        '/api/trips/${widget.tripId}/custom-pins'
       );
       if (pinsResponse != null) {
         customPins = List<Map<String, dynamic>>.from(
@@ -49,7 +49,7 @@ class _POIScreenState extends State<POIScreen> {
       // Load POI tags
       final tagsResponse = await _makeRequest(
         'GET',
-        'http://localhost:6006/api/poi-tags'
+        '/api/poi-tags'
       );
       if (tagsResponse != null) {
         poiTags = List<Map<String, dynamic>>.from(
@@ -60,7 +60,7 @@ class _POIScreenState extends State<POIScreen> {
       // Load POI reviews
       final reviewsResponse = await _makeRequest(
         'GET',
-        'http://localhost:6006/api/trips/${widget.tripId}/poi-reviews'
+        '/api/trips/${widget.tripId}/poi-reviews'
       );
       if (reviewsResponse != null) {
         poiReviews = List<Map<String, dynamic>>.from(
@@ -71,7 +71,7 @@ class _POIScreenState extends State<POIScreen> {
       // Load POI names
       final namesResponse = await _makeRequest(
         'GET',
-        'http://localhost:6006/api/trips/${widget.tripId}/poi-names'
+        '/api/trips/${widget.tripId}/poi-names'
       );
       if (namesResponse != null) {
         poiNames = List<Map<String, dynamic>>.from(
@@ -82,7 +82,7 @@ class _POIScreenState extends State<POIScreen> {
       // Load seasonal alerts
       final alertsResponse = await _makeRequest(
         'GET',
-        'http://localhost:6006/api/trips/${widget.tripId}/seasonal-alerts'
+        '/api/trips/${widget.tripId}/seasonal-alerts'
       );
       if (alertsResponse != null) {
         seasonalAlerts = List<Map<String, dynamic>>.from(
@@ -93,7 +93,7 @@ class _POIScreenState extends State<POIScreen> {
       // Load crowd prediction
       final crowdResponse = await _makeRequest(
         'GET',
-        'http://localhost:6006/api/trips/${widget.tripId}/crowd-prediction'
+        '/api/trips/${widget.tripId}/crowd-prediction'
       );
       if (crowdResponse != null) {
         crowdPrediction = List<Map<String, dynamic>>.from(
@@ -104,7 +104,7 @@ class _POIScreenState extends State<POIScreen> {
       // Load facilities
       final facilitiesResponse = await _makeRequest(
         'GET',
-        'http://localhost:6006/api/trips/${widget.tripId}/poi-facilities'
+        '/api/trips/${widget.tripId}/poi-facilities'
       );
       if (facilitiesResponse != null) {
         poiFacilities = List<Map<String, dynamic>>.from(
@@ -115,7 +115,7 @@ class _POIScreenState extends State<POIScreen> {
       // Load experience bookings
       final bookingsResponse = await _makeRequest(
         'GET',
-        'http://localhost:6006/api/trips/${widget.tripId}/experience-bookings'
+        '/api/trips/${widget.tripId}/experience-bookings'
       );
       if (bookingsResponse != null) {
         experienceBookings = List<Map<String, dynamic>>.from(
@@ -173,7 +173,7 @@ class _POIScreenState extends State<POIScreen> {
           try {
             final response = await _makeRequest(
               'POST',
-              'http://localhost:6006/api/trips/${widget.tripId}/custom-pins',
+              '/api/trips/${widget.tripId}/custom-pins',
               body: pinData
             );
             
@@ -1667,7 +1667,7 @@ class _AddPinDialogState extends State<_AddPinDialog> {
     try {
       final response = await _makeRequest(
         'GET',
-        'http://localhost:5005/api/trips/${widget.tripId}/crowd-prediction'
+        '/api/trips/${widget.tripId}/crowd-prediction'
       );
       
       if (response != null) {
@@ -1687,7 +1687,7 @@ class _AddPinDialogState extends State<_AddPinDialog> {
     try {
       final response = await _makeRequest(
         'GET',
-        'http://localhost:5005/api/trips/${widget.tripId}/poi-facilities'
+        '/api/trips/${widget.tripId}/poi-facilities'
       );
       
       if (response != null) {
@@ -1719,7 +1719,7 @@ class _AddPinDialogState extends State<_AddPinDialog> {
       
       final response = await _makeRequest(
         'GET',
-        'http://localhost:5005/api/trips/${widget.tripId}/nearby-search'
+        '/api/trips/${widget.tripId}/nearby-search'
             '?lat=$lat&lng=$lng&radius=$radius&type=$type'
       );
       
@@ -1740,7 +1740,7 @@ class _AddPinDialogState extends State<_AddPinDialog> {
     try {
       final response = await _makeRequest(
         'GET',
-        'http://localhost:5005/api/trips/${widget.tripId}/experience-bookings'
+        '/api/trips/${widget.tripId}/experience-bookings'
       );
       
       if (response != null) {
@@ -1764,7 +1764,7 @@ class _AddPinDialogState extends State<_AddPinDialog> {
           try {
             final response = await _makeRequest(
               'POST',
-              'http://localhost:5005/api/trips/${widget.tripId}/experience-bookings',
+              '/api/trips/${widget.tripId}/experience-bookings',
               body: bookingData
             );
             
