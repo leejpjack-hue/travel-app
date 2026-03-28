@@ -79,8 +79,8 @@ ZenVoyage 是一款全方位旅遊行程規劃 App，涵蓋行前準備、時間
 
 | Task | 描述 | 狀態 |
 |------|------|------|
-| Task 0 | Architecture Design & Project Setup | ✅ 進行中 |
-| Task 1 | Backend Core — Express + SQLite + Auth | ⬜ |
+| Task 0 | Architecture Design & Project Setup | ✅ 已完成 |
+| Task 1 | Backend Core — Express + SQLite + Auth | ✅ 已完成 |
 | Task 2 | Module 1: Pre-trip & Preferences (F1–F10) | ⬜ |
 | Task 3 | Module 2: Timeline & Scheduling (F11–F20) | ⬜ |
 | Task 4 | Module 3: Transportation & Routing (F21–F30) | ⬜ |
