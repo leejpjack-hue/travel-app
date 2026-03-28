@@ -451,6 +451,32 @@ function createTables() {
       )
     `);
 
+    // Experience bookings table (F37)
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS experience_bookings (
+        id TEXT PRIMARY KEY,
+        trip_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        experience_id TEXT NOT NULL,
+        experience_name TEXT NOT NULL,
+        experience_type TEXT, -- 'tour', 'activity', 'workshop', 'cultural', 'adventure'
+        provider_name TEXT,
+        date DATE NOT NULL,
+        start_time TIME NOT NULL,
+        end_time TIME NOT NULL,
+        participants INTEGER DEFAULT 1,
+        price_per_person REAL,
+        total_price REAL,
+        special_requirements TEXT, -- JSON
+        booking_reference TEXT UNIQUE,
+        status TEXT DEFAULT 'confirmed', -- 'confirmed', 'cancelled', 'completed', 'no_show'
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (trip_id) REFERENCES trips (id) ON DELETE CASCADE,
+        FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+      )
+    `);
+
     // Initialize default tags
     initializeDefaultPoiTags();
 

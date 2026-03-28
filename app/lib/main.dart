@@ -3,6 +3,7 @@ import 'trip_create_screen.dart';
 import 'collaborators_screen.dart';
 import 'timeline_screen.dart';
 import 'transportation_screen.dart';
+import 'poi_screen.dart';
 
 void main() {
   runApp(const MyApp());
@@ -63,8 +64,15 @@ class _HomeScreenState extends State<HomeScreen> {
     const HomeContent(),
     const TripCreateScreen(),
     const TransportationPlanningScreen(tripId: 'demo-trip-id'),
+    const POIScreen(tripId: 'demo-trip-id'),
     const ProfileScreen(),
   ];
+
+  @override
+  void initState() {
+    super.initState();
+    _currentIndex = 0; // Start with home screen
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -94,6 +102,10 @@ class _HomeScreenState extends State<HomeScreen> {
           BottomNavigationBarItem(
             icon: Icon(Icons.directions_car),
             label: '交通',
+          ),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.place),
+            label: '景點',
           ),
           BottomNavigationBarItem(
             icon: Icon(Icons.person),
@@ -220,6 +232,17 @@ class HomeContent extends StatelessWidget {
                   title: '航班資訊',
                   subtitle: '自動匯入',
                   color: const Color(0xFFFF6B6B),
+                ),
+                _buildActionCard(
+                  context,
+                  icon: Icons.place,
+                  title: '景點管理',
+                  subtitle: '自訂地標',
+                  color: const Color(0xFF96CEB4),
+                  onTap: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (context) => const POIScreen(tripId: 'demo-trip-id')),
+                  ),
                 ),
               ],
             ),
@@ -486,6 +509,7 @@ class ProfileScreen extends StatelessWidget {
     final menuItems = [
       {'icon': Icons.history, 'title': '歷史行程', 'subtitle': '查看過往旅行記錄'},
       {'icon': Icons.favorite, 'title': '我的收藏', 'subtitle': '收藏的景點和地點'},
+      {'icon': Icons.place, 'title': '景點管理', 'subtitle': '自訂地標與標籤'},
       {'icon': Icons.group, 'title': '協作管理', 'subtitle': '管理行程協作者'},
       {'icon': Icons.settings, 'title': '偏好設定', 'subtitle': '交通、作息等偏好'},
       {'icon': Icons.help, 'title': '幫助中心', 'subtitle': '使用指南和常見問題'},
@@ -563,6 +587,12 @@ class ProfileScreen extends StatelessWidget {
               tripName: '示範行程',
             ),
           ),
+        );
+        break;
+      case '景點管理':
+        Navigator.push(
+          context,
+          MaterialPageRoute(builder: (context) => const POIScreen(tripId: 'demo-trip-id')),
         );
         break;
       case '登出':

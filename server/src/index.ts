@@ -2554,6 +2554,469 @@ app.get('/api/trips/:id/japan-tickets/:ticket_id/usage-history', (req, res) => {
   }
 });
 
+// Module 4: Additional POI & Content APIs
+
+// F32 - Crowd prediction heatmap - GET /api/trips/:id/crowd-prediction
+app.get('/api/trips/:id/crowd-prediction', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    // Get all custom pins and destinations for crowd prediction
+    const pins = db.prepare('SELECT * FROM custom_pins WHERE trip_id = ?').all(req.params.id);
+    const destinations = db.prepare('SELECT * FROM destinations WHERE trip_id = ?').all(req.params.id);
+    
+    // Simulate crowd prediction data based on time of day and day of week
+    const now = new Date();
+    const hour = now.getHours();
+    const dayOfWeek = now.getDay();
+    
+    const crowdData: any[] = [];
+    
+    // Process pins
+    pins.forEach((pin: any) => {
+      const crowdLevel = Math.floor(Math.random() * 100); // Simulated crowd level 0-100
+      const crowdStatus = crowdLevel < 30 ? 'low' : crowdLevel < 70 ? 'medium' : 'high';
+      
+      crowdData.push({
+        id: pin.id,
+        name: pin.name,
+        type: pin.type,
+        latitude: pin.latitude,
+        longitude: pin.longitude,
+        crowd_level: crowdLevel,
+        crowd_status: crowdStatus,
+        estimated_wait_time: Math.floor(crowdLevel / 20), // Simulated wait time in minutes
+        time_factor: hour >= 10 && hour <= 18 ? 1.2 : 0.8, // Higher crowds during day time
+        day_factor: dayOfWeek === 0 || dayOfWeek === 6 ? 1.3 : 1.0, // Higher crowds on weekends
+        last_updated: now.toISOString()
+      });
+    });
+    
+    // Process destinations
+    destinations.forEach((dest: any) => {
+      const crowdLevel = Math.floor(Math.random() * 100);
+      const crowdStatus = crowdLevel < 30 ? 'low' : crowdLevel < 70 ? 'medium' : 'high';
+      
+      crowdData.push({
+        id: dest.id,
+        name: dest.name,
+        type: dest.type,
+        latitude: dest.latitude,
+        longitude: dest.longitude,
+        crowd_level: crowdLevel,
+        crowd_status: crowdStatus,
+        estimated_wait_time: Math.floor(crowdLevel / 15),
+        time_factor: hour >= 9 && hour <= 17 ? 1.3 : 0.9,
+        day_factor: dayOfWeek === 0 || dayOfWeek === 6 ? 1.4 : 1.0,
+        last_updated: now.toISOString()
+      });
+    });
+
+    res.json({ 
+      crowd_prediction: crowdData,
+      metadata: {
+        generated_at: now.toISOString(),
+        data_points: crowdData.length,
+        peak_hours: [11, 12, 13, 14, 15],
+        peak_days: [0, 6] // Sunday, Saturday
+      }
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// F34 - POI surrounding facilities search - GET /api/trips/:id/poi-facilities
+app.get('/api/trips/:id/poi-facilities', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    // Get custom pins and destinations to search around
+    const customPins = db.prepare('SELECT * FROM custom_pins WHERE trip_id = ?').all(req.params.id);
+    const destinations = db.prepare('SELECT * FROM destinations WHERE trip_id = ?').all(req.params.id);
+    
+    // Simulated nearby facilities database
+    const facilityCategories = [
+      { type: 'restroom', icon: '🚻', name: '洗手間', priority: 1 },
+      { type: 'atm', icon: '🏦', name: 'ATM', priority: 2 },
+      { type: 'pharmacy', icon: '💊', name: '藥局', priority: 1 },
+      { type: 'convenience', icon: '🏪', name: '便利商店', priority: 3 },
+      { type: 'restaurant', icon: '🍽️', name: '餐廳', priority: 2 },
+      { type: 'parking', icon: '🅿️', name: '停車場', priority: 3 },
+      { type: 'hospital', icon: '🏥', name: '醫院', priority: 1 },
+      { type: 'police', icon: '👮', name: '警察局', priority: 1 }
+    ];
+
+    const allFacilities: any[] = [];
+    
+    // Generate facilities around each POI
+    [...customPins, ...destinations].forEach((poi: any) => {
+      facilityCategories.forEach(category => {
+        // Generate facilities within 500-2000m radius
+        const distance = Math.floor(Math.random() * 1500) + 500;
+        const duration = Math.floor(distance / 80); // Walking speed ~80m/min
+        
+        allFacilities.push({
+          id: generateUUID(),
+          poi_id: poi.id,
+          poi_name: poi.name,
+          poi_type: poi.type,
+          facility_type: category.type,
+          facility_name: category.name,
+          icon: category.icon,
+          distance: distance,
+          duration: duration,
+          walking_time: `${duration}分鐘`,
+          address: `附近${category.name} - 模擬地址`,
+          rating: (Math.random() * 2 + 3).toFixed(1), // 3.0-5.0 rating
+          is_available: Math.random() > 0.1, // 90% available
+          operating_hours: category.type === 'convenience' ? '24小時' : '08:00-22:00',
+          created_at: new Date().toISOString()
+        });
+      });
+    });
+
+    // Sort by distance and group by facility type
+    const sortedFacilities = allFacilities.sort((a, b) => a.distance - b.distance);
+    const groupedFacilities = facilityCategories.map(category => ({
+      category: category,
+      facilities: sortedFacilities.filter(f => f.facility_type === category.type).slice(0, 5) // Top 5 per category
+    }));
+
+    res.json({ 
+      poi_facilities: groupedFacilities,
+      total_facilities: sortedFacilities.length,
+      search_radius: 2000
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// F36 - Nearby search for restaurants/amenities - GET /api/trips/:id/nearby-search
+app.get('/api/trips/:id/nearby-search', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    const { 
+      lat, 
+      lng, 
+      radius = 1000, 
+      type = 'all', 
+      price_range = null,
+      cuisine_type = null 
+    } = req.query;
+
+    if (!lat || !lng) {
+      return res.status(400).json({ error: 'Latitude and longitude are required' });
+    }
+
+    // Get current trip locations
+    const customPins = db.prepare('SELECT * FROM custom_pins WHERE trip_id = ?').all(req.params.id);
+    const destinations = db.prepare('SELECT * FROM destinations WHERE trip_id = ?').all(req.params.id);
+
+    // Simulated restaurant and amenity database
+    const mockData = [
+      // Restaurants
+      { name: '拉麵一福', type: 'restaurant', cuisine: 'japanese', price_range: 2, rating: 4.5, distance: 150 },
+      { name: '四川飯店', type: 'restaurant', cuisine: 'chinese', price_range: 1, rating: 4.2, distance: 300 },
+      { name: '韓式烤肉', type: 'restaurant', cuisine: 'korean', price_range: 3, rating: 4.7, distance: 450 },
+      { name: '咖啡廳', type: 'cafe', cuisine: 'cafe', price_range: 2, rating: 4.3, distance: 200 },
+      { name: '精緻餐廳', type: 'restaurant', cuisine: 'western', price_range: 4, rating: 4.8, distance: 600 },
+      
+      // Amenities
+      { name: '7-Eleven', type: 'convenience', price_range: 0, rating: 4.0, distance: 180 },
+      { name: '藥局', type: 'pharmacy', price_range: 0, rating: 4.1, distance: 350 },
+      { name: 'ATM', type: 'atm', price_range: 0, rating: 5.0, distance: 120 },
+      { name: '停車場', type: 'parking', price_range: 1, rating: 3.8, distance: 400 },
+      { name: '觀景台', type: 'attraction', price_range: 0, rating: 4.6, distance: 800 },
+      
+      // More facilities
+      { name: '警察局', type: 'police', price_range: 0, rating: 5.0, distance: 500 },
+      { name: '醫院', type: 'hospital', price_range: 0, rating: 4.4, distance: 700 },
+      { name: '書店', type: 'shopping', price_range: 2, rating: 4.2, distance: 550 },
+      { name: '健身房', type: 'fitness', price_range: 4, rating: 4.5, distance: 900 },
+      { name: '加油站', type: 'gas_station', price_range: 2, rating: 3.9, distance: 1100 }
+    ];
+
+    // Filter and sort results
+    let filteredResults = mockData.filter(item => {
+      // Distance filter
+      const distance = parseFloat(item.distance.toString());
+      if (distance > parseFloat(radius.toString())) return false;
+      
+      // Type filter
+      if (type !== 'all' && item.type !== type) return false;
+      
+      // Price range filter
+      if (price_range && item.price_range !== parseInt(price_range.toString())) return false;
+      
+      // Cuisine filter
+      if (cuisine_type && item.cuisine !== cuisine_type) return false;
+      
+      return true;
+    });
+
+    // Sort by distance and rating
+    filteredResults.sort((a, b) => {
+      if (a.distance !== b.distance) {
+        return a.distance - b.distance;
+      }
+      return parseFloat(b.rating.toString()) - parseFloat(a.rating.toString());
+    });
+
+    // Group by type
+    const groupedResults = {
+      restaurants: filteredResults.filter(item => item.type === 'restaurant'),
+      cafes: filteredResults.filter(item => item.type === 'cafe'),
+      convenience: filteredResults.filter(item => item.type === 'convenience'),
+      amenities: filteredResults.filter(item => ['pharmacy', 'atm', 'parking', 'police', 'hospital'].includes(item.type)),
+      attractions: filteredResults.filter(item => item.type === 'attraction'),
+      services: filteredResults.filter(item => ['shopping', 'fitness', 'gas_station'].includes(item.type))
+    };
+
+    res.json({ 
+      nearby_results: groupedResults,
+      search_metadata: {
+        center_lat: parseFloat(lat.toString()),
+        center_lng: parseFloat(lng.toString()),
+        search_radius_meters: parseInt(radius.toString()),
+        total_results: filteredResults.length,
+        search_filters: {
+          type: type,
+          price_range: price_range,
+          cuisine_type: cuisine_type
+        }
+      }
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// F37 - Real-time experience booking API - POST /api/trips/:id/experience-bookings
+app.post('/api/trips/:id/experience-bookings', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    const { 
+      experience_id, 
+      experience_name, 
+      experience_type, 
+      provider_name, 
+      date, 
+      start_time, 
+      end_time, 
+      participants, 
+      price_per_person, 
+      total_price, 
+      special_requirements,
+      booking_reference 
+    } = req.body;
+
+    if (!experience_id || !experience_name || !date || !start_time) {
+      return res.status(400).json({ 
+        error: 'Experience ID, name, date, and start time are required' 
+      });
+    }
+
+    // Generate booking reference if not provided
+    const finalBookingRef = booking_reference || `ZV-${generateUUID().substring(0, 8).toUpperCase()}`;
+    
+    // Check for availability (simulated)
+    const existingBooking = db.prepare(`
+      SELECT COUNT(*) as count FROM experience_bookings 
+      WHERE experience_id = ? AND date = ? AND ((start_time <= ? AND end_time > ?) OR (start_time < ? AND end_time >= ?))
+    `).get(experience_id, date, start_time, start_time, end_time, end_time);
+    
+    if ((existingBooking as any).count > 0) {
+      return res.status(409).json({ 
+        error: 'This time slot is already booked. Please choose a different time.',
+        available_slots: [
+          { date: date, start_time: '09:00', end_time: '11:00' },
+          { date: date, start_time: '14:00', end_time: '16:00' },
+          { date: date, start_time: '17:00', end_time: '19:00' }
+        ]
+      });
+    }
+
+    // Create booking
+    const bookingId = generateUUID();
+    const now = new Date().toISOString();
+
+    const stmt = db.prepare(`
+      INSERT INTO experience_bookings (
+        id, trip_id, user_id, experience_id, experience_name, experience_type, 
+        provider_name, date, start_time, end_time, participants, price_per_person, 
+        total_price, special_requirements, booking_reference, status, created_at, updated_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'confirmed', ?, ?)
+    `);
+
+    stmt.run(
+      bookingId,
+      req.params.id,
+      user.id,
+      experience_id,
+      experience_name,
+      experience_type,
+      provider_name,
+      date,
+      start_time,
+      end_time,
+      participants || 1,
+      price_per_person,
+      total_price,
+      special_requirements ? JSON.stringify(special_requirements) : null,
+      finalBookingRef,
+      now,
+      now
+    );
+
+    // Get created booking
+    const booking = db.prepare(`
+      SELECT eb.*, u.name as user_name
+      FROM experience_bookings eb
+      LEFT JOIN users u ON eb.user_id = u.id
+      WHERE eb.id = ?
+    `).get(bookingId) as any;
+
+    // Send confirmation (simulated)
+    const confirmation = {
+      booking_id: bookingId,
+      booking_reference: finalBookingRef,
+      experience_name: experience_name,
+      date: date,
+      time: `${start_time} - ${end_time}`,
+      participants: participants || 1,
+      total_price: total_price,
+      status: 'confirmed',
+      confirmation_code: generateUUID().substring(0, 6).toUpperCase(),
+      cancellation_policy: 'Free cancellation up to 24 hours before the experience',
+      contact_info: {
+        provider_email: 'support@zenvoyage.app',
+        provider_phone: '+886-912-345-678'
+      },
+      next_steps: [
+        'Check your email for detailed confirmation',
+        'Prepare identification for check-in',
+        'Arrive 15 minutes early for check-in',
+        'Contact support with any questions'
+      ]
+    };
+
+    res.status(201).json({
+      message: 'Experience booking confirmed successfully',
+      booking: booking,
+      confirmation: confirmation
+    });
+
+  } catch (error: any) {
+    console.error('Experience booking error:', error);
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// F37 - Get experience bookings - GET /api/trips/:id/experience-bookings
+app.get('/api/trips/:id/experience-bookings', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    const bookings = db.prepare(`
+      SELECT eb.*, u.name as user_name
+      FROM experience_bookings eb
+      LEFT JOIN users u ON eb.user_id = u.id
+      WHERE eb.trip_id = ?
+      ORDER BY eb.date DESC, eb.start_time DESC
+    `).all(req.params.id);
+
+    res.json({ experience_bookings: bookings });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// F37 - Cancel experience booking - DELETE /api/trips/:id/experience-bookings/:bookingId
+app.delete('/api/trips/:id/experience-bookings/:bookingId', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    const booking = db.prepare(`
+      SELECT * FROM experience_bookings 
+      WHERE id = ? AND trip_id = ? AND user_id = ?
+    `).get(req.params.bookingId, req.params.id, user.id);
+    
+    if (!booking) {
+      return res.status(404).json({ error: 'Booking not found' });
+    }
+
+    // Check cancellation policy (24 hours before)
+    const bookingDate = new Date((booking as any).date + 'T' + (booking as any).start_time);
+    const now = new Date();
+    const timeDiff = bookingDate.getTime() - now.getTime();
+    const hoursDiff = timeDiff / (1000 * 3600);
+
+    if (hoursDiff < 24) {
+      return res.status(400).json({ 
+        error: 'Cannot cancel within 24 hours of the experience',
+        cancellation_deadline: new Date(now.getTime() + 24 * 60 * 60 * 1000).toISOString()
+      });
+    }
+
+    // Cancel booking
+    db.prepare('DELETE FROM experience_bookings WHERE id = ?').run(req.params.bookingId);
+
+    res.json({ 
+      message: 'Experience booking cancelled successfully',
+      cancelled_booking: booking,
+      refund_info: {
+        refund_amount: (booking as any).total_price,
+        refund_method: 'Original payment method',
+        processing_time: '5-7 business days'
+      }
+    });
+
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
 // Serve Flutter Web static files only for non-API requests
 const flutterBuildPath = path.join(__dirname, '../../app/build/web');
 if (fs.existsSync(flutterBuildPath)) {
