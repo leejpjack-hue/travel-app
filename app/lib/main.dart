@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'trip_create_screen.dart';
 import 'collaborators_screen.dart';
+import 'timeline_screen.dart';
+import 'transportation_screen.dart';
 
 void main() {
   runApp(const MyApp());
@@ -60,6 +62,7 @@ class _HomeScreenState extends State<HomeScreen> {
   final List<Widget> _screens = [
     const HomeContent(),
     const TripCreateScreen(),
+    const TransportationPlanningScreen(tripId: 'demo-trip-id'),
     const ProfileScreen(),
   ];
 
@@ -87,6 +90,10 @@ class _HomeScreenState extends State<HomeScreen> {
           BottomNavigationBarItem(
             icon: Icon(Icons.add),
             label: '創建',
+          ),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.directions_car),
+            label: '交通',
           ),
           BottomNavigationBarItem(
             icon: Icon(Icons.person),

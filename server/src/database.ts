@@ -102,6 +102,11 @@ function createTables() {
         visit_date DATETIME,
         duration_hours REAL,
         notes TEXT,
+        business_hours_start TEXT,
+        business_hours_end TEXT,
+        business_days TEXT, -- JSON array of days
+        order_index INTEGER DEFAULT 0,
+        locked BOOLEAN DEFAULT FALSE,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (trip_id) REFERENCES trips (id) ON DELETE CASCADE
@@ -132,6 +137,144 @@ function createTables() {
     `);
     
     console.log('📊 Database tables created/verified');
+    
+    // Create timeline management tables
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS timeline_items (
+        id TEXT PRIMARY KEY,
+        trip_id TEXT NOT NULL,
+        destination_id TEXT,
+        name TEXT NOT NULL,
+        type TEXT NOT NULL,
+        start_time DATETIME NOT NULL,
+        end_time DATETIME NOT NULL,
+        duration_minutes INTEGER,
+        order_index INTEGER DEFAULT 0,
+        locked BOOLEAN DEFAULT FALSE,
+        buffer_minutes INTEGER DEFAULT 0,
+        walking_distance_meters INTEGER,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (trip_id) REFERENCES trips (id) ON DELETE CASCADE,
+        FOREIGN KEY (destination_id) REFERENCES destinations (id) ON DELETE SET NULL
+      )
+    `);
+    
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS travel_times (
+        id TEXT PRIMARY KEY,
+        trip_id TEXT NOT NULL,
+        from_destination_id TEXT,
+        to_destination_id TEXT,
+        transport_mode TEXT NOT NULL,
+        duration_minutes INTEGER NOT NULL,
+        distance_meters INTEGER,
+        cost INTEGER,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (trip_id) REFERENCES trips (id) ON DELETE CASCADE,
+        FOREIGN KEY (from_destination_id) REFERENCES destinations (id) ON DELETE CASCADE,
+        FOREIGN KEY (to_destination_id) REFERENCES destinations (id) ON DELETE CASCADE
+      )
+    `);
+    
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS buffer_settings (
+        id TEXT PRIMARY KEY,
+        trip_id TEXT NOT NULL,
+        type TEXT NOT NULL, -- 'buffer' or 'gap'
+        duration_minutes INTEGER DEFAULT 30,
+        applied_to TEXT NOT NULL, -- 'all' or 'specific'
+        destination_ids TEXT, -- JSON array of destination IDs
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (trip_id) REFERENCES trips (id) ON DELETE CASCADE
+      )
+    `);
+    
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS timezone_settings (
+        id TEXT PRIMARY KEY,
+        trip_id TEXT NOT NULL,
+        home_timezone TEXT NOT NULL,
+        destination_timezone TEXT NOT NULL,
+        timezone_offset_hours INTEGER NOT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (trip_id) REFERENCES trips (id) ON DELETE CASCADE
+      )
+    `);
+    
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS weather_alternatives (
+        id TEXT PRIMARY KEY,
+        trip_id TEXT NOT NULL,
+        destination_id TEXT,
+        weather_condition TEXT NOT NULL,
+        alternative_name TEXT NOT NULL,
+        alternative_type TEXT,
+        notes TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (trip_id) REFERENCES trips (id) ON DELETE CASCADE,
+        FOREIGN KEY (destination_id) REFERENCES destinations (id) ON DELETE CASCADE
+      )
+    `);
+    
+    console.log('🕐 Timeline management tables created/verified');
+    
+    // Create transportation planning tables
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS transportation_modes (
+        id TEXT PRIMARY KEY,
+        trip_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        type TEXT NOT NULL, -- 'walking', 'public', 'taxi', 'car', 'bike', 'train', 'bus', 'ferry'
+        cost_per_km INTEGER DEFAULT 0,
+        duration_factor REAL DEFAULT 1.0,
+        reliability_score REAL DEFAULT 1.0,
+        carbon_footprint_score REAL DEFAULT 1.0,
+        icon TEXT,
+        description TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (trip_id) REFERENCES trips (id) ON DELETE CASCADE
+      )
+    `);
+    
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS route_optimizations (
+        id TEXT PRIMARY KEY,
+        trip_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        algorithm TEXT NOT NULL, -- 'nearest_neighbor', 'genetic', 'simulated_annealing', 'two_opt'
+        total_duration_minutes INTEGER,
+        total_distance_meters INTEGER,
+        total_cost INTEGER,
+        optimized_route_order TEXT, -- JSON array of destination IDs
+        waypoints TEXT, -- JSON array of coordinates
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (trip_id) REFERENCES trips (id) ON DELETE CASCADE
+      )
+    `);
+    
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS transportation_segments (
+        id TEXT PRIMARY KEY,
+        trip_id TEXT NOT NULL,
+        from_destination_id TEXT NOT NULL,
+        to_destination_id TEXT NOT NULL,
+        transport_mode_id TEXT NOT NULL,
+        duration_minutes INTEGER NOT NULL,
+        distance_meters INTEGER NOT NULL,
+        cost INTEGER DEFAULT 0,
+        instructions TEXT, -- JSON array of navigation instructions
+        departure_time DATETIME,
+        arrival_time DATETIME,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (trip_id) REFERENCES trips (id) ON DELETE CASCADE,
+        FOREIGN KEY (from_destination_id) REFERENCES destinations (id) ON DELETE CASCADE,
+        FOREIGN KEY (to_destination_id) REFERENCES destinations (id) ON DELETE CASCADE,
+        FOREIGN KEY (transport_mode_id) REFERENCES transportation_modes (id) ON DELETE CASCADE
+      )
+    `);
+    
+    console.log('🚗 Transportation planning tables created/verified');
   } catch (error) {
     console.error('❌ Failed to create tables:', error);
   }

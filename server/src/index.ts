@@ -5,7 +5,7 @@ import fs from 'fs';
 import { initializeDatabase, getDatabase, generateUUID } from './database';
 import { createUser, findUserByEmail, verifyPassword, getCurrentUser, generateToken } from './auth';
 const app = express();
-const PORT = 6006;
+const PORT = process.env.PORT || 6006;
 
 // Initialize database on startup
 initializeDatabase();
@@ -832,28 +832,1082 @@ app.get('/api/trips/:id/base-tour-mode', (req, res) => {
   }
 });
 
-// Serve Flutter Web static files (after API routes)
-const flutterBuildPath = path.join(__dirname, '../../app/build/web');
-if (fs.existsSync(flutterBuildPath)) {
-  app.use(express.static(flutterBuildPath));
-}
+// API routes must be defined before static files
 
-// Fallback to Flutter index.html (only if it exists)
-app.get('*', (_req, res) => {
-  if (fs.existsSync(path.join(flutterBuildPath, 'index.html'))) {
-    res.sendFile(path.join(flutterBuildPath, 'index.html'));
-  } else {
-    res.status(404).json({ error: 'Not found' });
+// Module 2: Timeline & Scheduling APIs
+
+// GET /api/trips/:id/timeline - Get timeline for a trip
+app.get('/api/trips/:id/timeline', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    // Get timeline items in order (simplified to avoid join issues)
+    const timelineItems = db.prepare(`
+      SELECT ti.*, 
+             CASE WHEN ti.destination_id IS NOT NULL THEN 'destination' ELSE ti.type END as destination_name,
+             ti.type as destination_type,
+             '' as address
+      FROM timeline_items ti
+      WHERE ti.trip_id = ?
+      ORDER BY ti.order_index
+    `).all(req.params.id);
+
+    // Get business hours conflicts (simplified - no business hours support yet)
+    const conflicts: any[] = [];
+
+    // Calculate walking distances
+    const walkingDistances = db.prepare(`
+      SELECT SUM(ti.walking_distance_meters) as total_walking_distance
+      FROM timeline_items ti
+      WHERE ti.trip_id = ? AND ti.walking_distance_meters > 0
+    `).get(req.params.id);
+
+    res.json({
+      timeline_items: timelineItems,
+      business_hours_conflicts: conflicts,
+      total_walking_distance: (walkingDistances as any)?.total_walking_distance || 0,
+      daily_summary: generateDailySummary(timelineItems)
+    });
+  } catch (error: any) {
+    console.error('Timeline API error:', error);
+    res.status(500).json({ error: error.message || 'Internal server error' });
   }
 });
 
-// Error handling middleware
-app.use((err: any, req: any, res: any, next: any) => {
-  console.error('Server error:', err);
-  res.status(500).json({ error: 'Internal server error' });
+// POST /api/trips/:id/timeline - Add timeline item
+app.post('/api/trips/:id/timeline', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    const { destination_id, name, type, start_time, end_time, duration_minutes, buffer_minutes = 0 } = req.body;
+
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    // Get max order index
+    const maxOrder = db.prepare('SELECT MAX(order_index) as max_index FROM timeline_items WHERE trip_id = ?').get(req.params.id);
+    const newIndex = (maxOrder && (maxOrder as any)?.max_index || 0) + 1;
+
+    const timelineId = generateUUID();
+    const now = new Date().toISOString();
+
+    db.prepare(`
+      INSERT INTO timeline_items (id, trip_id, destination_id, name, type, start_time, end_time, duration_minutes, buffer_minutes, order_index, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      timelineId,
+      req.params.id,
+      destination_id,
+      name,
+      type,
+      start_time,
+      end_time,
+      duration_minutes,
+      buffer_minutes,
+      newIndex,
+      now
+    );
+
+    // Calculate and update walking distance (mock calculation)
+    if (destination_id) {
+      const walkingDistance = Math.floor(Math.random() * 1000) + 200; // Mock 200-1200m
+      db.prepare('UPDATE timeline_items SET walking_distance_meters = ? WHERE id = ?').run(walkingDistance, timelineId);
+    }
+
+    const timelineItem = db.prepare('SELECT * FROM timeline_items WHERE id = ?').get(timelineId);
+    res.status(201).json({
+      message: 'Timeline item added successfully',
+      timeline_item: timelineItem
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
 });
 
-// Graceful shutdown
+// PUT /api/trips/:id/timeline/:itemId - Update timeline item
+app.put('/api/trips/:id/timeline/:itemId', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    const { name, start_time, end_time, duration_minutes, buffer_minutes, locked } = req.body;
+
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    const existing = db.prepare('SELECT * FROM timeline_items WHERE id = ? AND trip_id = ?').get(req.params.itemId, req.params.id);
+    if (!existing) {
+      return res.status(404).json({ error: 'Timeline item not found' });
+    }
+
+    const now = new Date().toISOString();
+    db.prepare(`
+      UPDATE timeline_items SET 
+        name = COALESCE(?, name),
+        start_time = COALESCE(?, start_time),
+        end_time = COALESCE(?, end_time),
+        duration_minutes = COALESCE(?, duration_minutes),
+        buffer_minutes = COALESCE(?, buffer_minutes),
+        locked = COALESCE(?, locked),
+        updated_at = ?
+      WHERE id = ? AND trip_id = ?
+    `).run(
+      name,
+      start_time,
+      end_time,
+      duration_minutes,
+      buffer_minutes,
+      locked,
+      now,
+      req.params.itemId,
+      req.params.id
+    );
+
+    const updatedItem = db.prepare('SELECT * FROM timeline_items WHERE id = ?').get(req.params.itemId);
+    res.json({
+      message: 'Timeline item updated successfully',
+      timeline_item: updatedItem
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// PUT /api/trips/:id/timeline/reorder - Reorder timeline items
+app.put('/api/trips/:id/timeline/reorder', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    const { item_orders } = req.body; // Array of { item_id, new_index }
+
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    const now = new Date().toISOString();
+    for (const order of item_orders) {
+      db.prepare(`
+        UPDATE timeline_items SET order_index = ?, updated_at = ?
+        WHERE id = ? AND trip_id = ?
+      `).run(order.new_index, now, order.item_id, req.params.id);
+    }
+
+    res.json({ message: 'Timeline reordered successfully' });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// GET /api/trips/:id/timeline/conflicts - Check for timeline conflicts
+app.get('/api/trips/:id/timeline/conflicts', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    // Get overlapping timeline items
+    const conflicts = db.prepare(`
+      SELECT ti1.name as item1_name, ti2.name as item2_name,
+             ti1.start_time as item1_start, ti1.end_time as item1_end,
+             ti2.start_time as item2_start, ti2.end_time as item2_end
+      FROM timeline_items ti1
+      JOIN timeline_items ti2 ON ti1.trip_id = ti2.trip_id AND ti1.id < ti2.id
+      WHERE ti1.trip_id = ? 
+        AND ti1.start_time < ti2.end_time AND ti1.end_time > ti2.start_time
+      ORDER BY ti1.start_time
+    `).all(req.params.id);
+
+    // Get business hours conflicts
+    const businessConflicts = db.prepare(`
+      SELECT ti.name, ti.start_time, ti.end_time, d.name as destination_name,
+             d.business_hours_start, d.business_hours_end
+      FROM timeline_items ti
+      JOIN destinations d ON ti.destination_id = d.id
+      WHERE ti.trip_id = ? AND d.business_hours_start IS NOT NULL AND d.business_hours_end IS NOT NULL
+        AND (ti.start_time < d.business_hours_start || ti.end_time > d.business_hours_end)
+    `).all(req.params.id);
+
+    res.json({
+      overlapping_conflicts: conflicts,
+      business_hours_conflicts: businessConflicts,
+      total_conflicts: conflicts.length + businessConflicts.length
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// POST /api/trips/:id/timeline/smart-fill - Smart gap filling
+app.post('/api/trips/:id/timeline/smart-fill', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    const { gap_start, gap_end, preferences = {} } = req.body;
+
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    // Find suggested activities for the gap
+    const gapMinutes = (new Date(gap_end).getTime() - new Date(gap_start).getTime()) / (1000 * 60);
+    
+    // Mock suggestions based on time of day and gap duration
+    const suggestions = generateSmartFillSuggestions(gap_start, gapMinutes, preferences);
+    
+    // Add suggested timeline items
+    const addedItems = [];
+    for (const suggestion of suggestions) {
+      if (suggestion.duration_minutes <= gapMinutes) {
+        const timelineId = generateUUID();
+        const maxOrder = db.prepare('SELECT MAX(order_index) as max_index FROM timeline_items WHERE trip_id = ?').get(req.params.id);
+        const newIndex = (maxOrder && (maxOrder as any)?.max_index || 0) + 1;
+        
+        db.prepare(`
+          INSERT INTO timeline_items (id, trip_id, name, type, start_time, end_time, duration_minutes, order_index, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(
+          timelineId,
+          req.params.id,
+          suggestion.name,
+          suggestion.type,
+          suggestion.start_time,
+          suggestion.end_time,
+          suggestion.duration_minutes,
+          newIndex,
+          new Date().toISOString()
+        );
+        
+        addedItems.push({ id: timelineId, ...suggestion });
+      }
+    }
+
+    res.json({
+      message: 'Smart fill completed successfully',
+      added_items: addedItems,
+      gap_filled_minutes: addedItems.reduce((sum, item) => sum + item.duration_minutes, 0)
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// GET /api/trips/:id/travel-times - Calculate point-to-point travel times
+app.get('/api/trips/:id/travel-times', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    // Get timeline items with destination info
+    const timelineItems = db.prepare(`
+      SELECT ti.*, d.latitude, d.longitude, d.name as dest_name
+      FROM timeline_items ti
+      LEFT JOIN destinations d ON ti.destination_id = d.id
+      WHERE ti.trip_id = ?
+      ORDER BY ti.order_index
+    `).all(req.params.id);
+
+    // Calculate travel times between consecutive items
+    const travelTimes = [];
+    for (let i = 0; i < timelineItems.length - 1; i++) {
+      const from = timelineItems[i] as any;
+      const to = timelineItems[i + 1] as any;
+      
+      // Mock travel time calculation
+      const travelTime = {
+        from_destination: from.dest_name || 'Unknown',
+        to_destination: to.dest_name || 'Unknown',
+        transport_mode: 'walking',
+        duration_minutes: Math.floor(Math.random() * 30) + 10, // 10-40 minutes mock
+        distance_meters: Math.floor(Math.random() * 2000) + 100, // 100-2100m mock
+        cost: 0
+      };
+      
+      travelTimes.push(travelTime);
+    }
+
+    res.json({ travel_times: travelTimes });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// GET /api/trips/:id/timezone-settings - Get timezone settings
+app.get('/api/trips/:id/timezone-settings', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    // Mock timezone data based on destination
+    const timezoneSettings = db.prepare('SELECT * FROM timezone_settings WHERE trip_id = ?').get(req.params.id);
+    if (!timezoneSettings) {
+      // Generate default timezone settings
+      const settings = {
+        home_timezone: 'Asia/Taipei',
+        destination_timezone: 'Asia/Tokyo',
+        timezone_offset_hours: 1, // Tokyo is 1 hour ahead of Taipei
+        created_at: new Date().toISOString()
+      };
+      
+      // Save to database
+      const settingsId = generateUUID();
+      db.prepare(`
+        INSERT INTO timezone_settings (id, trip_id, home_timezone, destination_timezone, timezone_offset_hours, created_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `).run(settingsId, req.params.id, settings.home_timezone, settings.destination_timezone, settings.timezone_offset_hours, settings.created_at);
+      
+      res.json(settings);
+    } else {
+      res.json(timezoneSettings);
+    }
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// PUT /api/trips/:id/timezone-settings - Update timezone settings
+app.put('/api/trips/:id/timezone-settings', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    const { home_timezone, destination_timezone } = req.body;
+
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    // Calculate timezone offset
+    const now = new Date();
+    const homeTime = new Date(now.toLocaleString("en-US", {timeZone: home_timezone}));
+    const destTime = new Date(now.toLocaleString("en-US", {timeZone: destination_timezone}));
+    const offsetHours = Math.round((destTime.getTime() - homeTime.getTime()) / (1000 * 60 * 60));
+
+    const existing = db.prepare('SELECT * FROM timezone_settings WHERE trip_id = ?').get(req.params.id);
+    const nowTime = new Date().toISOString();
+    
+    if (existing) {
+      db.prepare(`
+        UPDATE timezone_settings SET 
+          home_timezone = ?, 
+          destination_timezone = ?, 
+          timezone_offset_hours = ?, 
+          created_at = ?
+        WHERE trip_id = ?
+      `).run(home_timezone, destination_timezone, offsetHours, nowTime, req.params.id);
+    } else {
+      const settingsId = generateUUID();
+      db.prepare(`
+        INSERT INTO timezone_settings (id, trip_id, home_timezone, destination_timezone, timezone_offset_hours, created_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `).run(settingsId, req.params.id, home_timezone, destination_timezone, offsetHours, nowTime);
+    }
+
+    const settings = db.prepare('SELECT * FROM timezone_settings WHERE trip_id = ?').get(req.params.id);
+    res.json({
+      message: 'Timezone settings updated successfully',
+      timezone_settings: settings
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// GET /api/trips/:id/weather-alternatives - Get rainy day alternatives
+app.get('/api/trips/:id/weather-alternatives', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    const alternatives = db.prepare(`
+      SELECT wa.*, d.name as destination_name
+      FROM weather_alternatives wa
+      LEFT JOIN destinations d ON wa.destination_id = d.id
+      WHERE wa.trip_id = ?
+      ORDER BY wa.created_at DESC
+    `).all(req.params.id);
+
+    // Generate mock alternatives if none exist
+    if (alternatives.length === 0) {
+      const mockAlternatives = [
+        {
+          weather_condition: 'rain',
+          alternative_name: '室内博物館',
+          alternative_type: 'indoor',
+          notes: '適合雨天參觀，免費WiFi和空調'
+        },
+        {
+          weather_condition: 'rain',
+          alternative_name: '購物中心',
+          alternative_type: 'shopping',
+          notes: '逛街、用餐、娛樂一應俱全'
+        },
+        {
+          weather_condition: 'heavy_rain',
+          alternative_name: '咖啡廳體驗',
+          alternative_type: 'cafe',
+          notes: '品嘗當地特色咖啡，休息避雨'
+        }
+      ];
+
+      for (const alt of mockAlternatives) {
+        const altId = generateUUID();
+        db.prepare(`
+          INSERT INTO weather_alternatives (id, trip_id, weather_condition, alternative_name, alternative_type, notes, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
+        `).run(altId, req.params.id, alt.weather_condition, alt.alternative_name, alt.alternative_type, alt.notes, new Date().toISOString());
+      }
+
+      const newAlternatives = db.prepare(`
+        SELECT wa.*, d.name as destination_name
+        FROM weather_alternatives wa
+        LEFT JOIN destinations d ON wa.destination_id = d.id
+        WHERE wa.trip_id = ?
+        ORDER BY wa.created_at DESC
+      `).all(req.params.id);
+
+      res.json({ weather_alternatives: newAlternatives });
+    } else {
+      res.json({ weather_alternatives: alternatives });
+    }
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// Helper functions
+function generateDailySummary(timelineItems: any[]) {
+  const dailySummary: { [date: string]: any } = {};
+  
+  timelineItems.forEach(item => {
+    const date = item.start_time.split('T')[0];
+    if (!dailySummary[date]) {
+      dailySummary[date] = {
+        date,
+        total_duration: 0,
+        items_count: 0,
+        walking_distance: 0,
+        locked_items: 0
+      };
+    }
+    
+    dailySummary[date].total_duration += item.duration_minutes || 0;
+    dailySummary[date].items_count += 1;
+    dailySummary[date].walking_distance += item.walking_distance_meters || 0;
+    if (item.locked) dailySummary[date].locked_items += 1;
+  });
+  
+  return Object.values(dailySummary);
+}
+
+function generateSmartFillSuggestions(gapStart: string, gapMinutes: number, preferences: any) {
+  const suggestions = [];
+  const gapStartTime = new Date(gapStart);
+  const hour = gapStartTime.getHours();
+  
+  // Morning suggestions (6-12)
+  if (hour >= 6 && hour < 12) {
+    if (gapMinutes >= 30) {
+      suggestions.push({
+        name: '早餐咖啡',
+        type: 'meal',
+        duration_minutes: 30,
+        start_time: new Date(gapStartTime.getTime() + 10 * 60000).toISOString(),
+        end_time: new Date(gapStartTime.getTime() + 40 * 60000).toISOString()
+      });
+    }
+  }
+  
+  // Afternoon suggestions (12-17)
+  if (hour >= 12 && hour < 17) {
+    if (gapMinutes >= 45) {
+      suggestions.push({
+        name: '午休散步',
+        type: 'activity',
+        duration_minutes: 45,
+        start_time: new Date(gapStartTime.getTime() + 15 * 60000).toISOString(),
+        end_time: new Date(gapStartTime.getTime() + 60 * 60000).toISOString()
+      });
+    }
+  }
+  
+  // Evening suggestions (17-22)
+  if (hour >= 17 && hour < 22) {
+    if (gapMinutes >= 60) {
+      suggestions.push({
+        name: '晚餐時間',
+        type: 'meal',
+        duration_minutes: 60,
+        start_time: new Date(gapStartTime.getTime() + 20 * 60000).toISOString(),
+        end_time: new Date(gapStartTime.getTime() + 80 * 60000).toISOString()
+      });
+    }
+  }
+  
+  return suggestions.slice(0, 3); // Return top 3 suggestions
+}
+
+// Transportation Planning APIs (Module 3: F21-F30)
+
+// GET /api/trips/:id/transportation-modes - Get available transportation modes for a trip
+app.get('/api/trips/:id/transportation-modes', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+    
+    // Get user transportation preferences
+    const userPrefs = db.prepare('SELECT transport_preferences FROM users WHERE id = ?').get(user.id) as any;
+    const preferences = userPrefs?.transport_preferences ? JSON.parse(userPrefs.transport_preferences) : {};
+    
+    // Get existing transportation modes for this trip
+    const existingModes = db.prepare('SELECT * FROM transportation_modes WHERE trip_id = ?').all(req.params.id);
+    
+    // Default transportation modes based on preferences
+    const defaultModes = [
+      {
+        id: generateUUID(),
+        trip_id: req.params.id,
+        name: '步行',
+        type: 'walking',
+        cost_per_km: 0,
+        duration_factor: 1.0,
+        reliability_score: 0.9,
+        carbon_footprint_score: 0.1,
+        icon: '🚶',
+        description: '適合短距離移動，環保健康'
+      },
+      {
+        id: generateUUID(),
+        trip_id: req.params.id,
+        name: '大眾運輸',
+        type: 'public',
+        cost_per_km: 30,
+        duration_factor: 1.2,
+        reliability_score: 0.8,
+        carbon_footprint_score: 0.5,
+        icon: '🚌',
+        description: '經濟实惠，覆蓋範圍廣'
+      },
+      {
+        id: generateUUID(),
+        trip_id: req.params.id,
+        name: '計程車',
+        type: 'taxi',
+        cost_per_km: 200,
+        duration_factor: 0.8,
+        reliability_score: 0.95,
+        carbon_footprint_score: 0.8,
+        icon: '🚕',
+        description: '便捷舒適，點對點服務'
+      },
+      {
+        id: generateUUID(),
+        trip_id: req.params.id,
+        name: '自行車',
+        type: 'bike',
+        cost_per_km: 10,
+        duration_factor: 1.5,
+        reliability_score: 0.7,
+        carbon_footprint_score: 0.05,
+        icon: '🚲',
+        description: '環保健康，適合觀光'
+      }
+    ];
+    
+    // Filter and return modes based on preferences
+    let modes = existingModes.length > 0 ? existingModes : defaultModes;
+    
+    // Apply user preferences filtering
+    if (preferences.preferred_modes && preferences.preferred_modes.length > 0) {
+      modes = modes.filter((mode: any) => preferences.preferred_modes.includes(mode.type));
+    }
+    
+    res.json({ transportation_modes: modes });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// POST /api/trips/:id/transportation-modes - Add custom transportation mode
+app.post('/api/trips/:id/transportation-modes', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    const { name, type, cost_per_km = 0, duration_factor = 1.0, reliability_score = 1.0, carbon_footprint_score = 1.0, icon, description } = req.body;
+    
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+    
+    if (!name || !type) {
+      return res.status(400).json({ error: 'Name and type are required' });
+    }
+    
+    const modeId = generateUUID();
+    const now = new Date().toISOString();
+    
+    db.prepare(`
+      INSERT INTO transportation_modes (id, trip_id, name, type, cost_per_km, duration_factor, reliability_score, carbon_footprint_score, icon, description, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(modeId, req.params.id, name, type, cost_per_km, duration_factor, reliability_score, carbon_footprint_score, icon || '', description || '', now);
+    
+    const newMode = db.prepare('SELECT * FROM transportation_modes WHERE id = ?').get(modeId);
+    res.status(201).json({ 
+      message: 'Transportation mode added successfully',
+      transportation_mode: newMode 
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// POST /api/trips/:id/route-optimization - Optimize route using TSP algorithm
+app.post('/api/trips/:id/route-optimization', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    const { algorithm = 'nearest_neighbor', optimize_for = 'time', exclude_locked = true } = req.body;
+    
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+    
+    // Get destinations for this trip
+    const destinations = db.prepare('SELECT * FROM destinations WHERE trip_id = ? ORDER BY visit_date').all(req.params.id);
+    if (destinations.length < 2) {
+      return res.status(400).json({ error: 'At least 2 destinations required for route optimization' });
+    }
+    
+    // Filter out locked destinations if requested
+    let filteredDestinations = destinations;
+    if (exclude_locked) {
+      filteredDestinations = destinations.filter((dest: any) => !dest.locked);
+    }
+    
+    if (filteredDestinations.length < 2) {
+      return res.status(400).json({ error: 'At least 2 unlocked destinations required for route optimization' });
+    }
+    
+    // Get transportation modes
+    const transportationModes = db.prepare('SELECT * FROM transportation_modes WHERE trip_id = ?').all(req.params.id);
+    
+    // Calculate distances between all pairs of destinations
+    const distances = calculateDistances(filteredDestinations);
+    
+    // Apply TSP algorithm to find optimal order
+    const optimizedOrder = applyTSPAlgorithm(filteredDestinations, distances, algorithm, optimize_for);
+    
+    // Calculate total metrics for the optimized route
+    const totalMetrics = calculateRouteMetrics(optimizedOrder, distances, transportationModes);
+    
+    // Store the optimization result
+    const optimizationId = generateUUID();
+    const now = new Date().toISOString();
+    
+    db.prepare(`
+      INSERT INTO route_optimizations (id, trip_id, name, algorithm, total_duration_minutes, total_distance_meters, total_cost, optimized_route_order, waypoints, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      optimizationId,
+      req.params.id,
+      `${algorithm} optimization`,
+      algorithm,
+      totalMetrics.totalDuration,
+      totalMetrics.totalDistance,
+      totalMetrics.totalCost,
+      JSON.stringify(optimizedOrder.map(dest => dest.id)),
+      JSON.stringify(optimizedOrder.map(dest => ({ lat: dest.latitude, lng: dest.longitude }))),
+      now
+    );
+    
+    // Get transportation segments for the optimized route
+    const segments = generateTransportationSegments(optimizedOrder, distances, transportationModes);
+    
+    // Store segments in database
+    for (const segment of segments) {
+      const segmentId = generateUUID();
+      db.prepare(`
+        INSERT INTO transportation_segments (id, trip_id, from_destination_id, to_destination_id, transport_mode_id, duration_minutes, distance_meters, cost, instructions, departure_time, arrival_time, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        segmentId,
+        req.params.id,
+        segment.from_destination_id,
+        segment.to_destination_id,
+        segment.transport_mode_id,
+        segment.duration_minutes,
+        segment.distance_meters,
+        segment.cost,
+        JSON.stringify(segment.instructions || []),
+        segment.departure_time,
+        segment.arrival_time,
+        now
+      );
+    }
+    
+    res.status(201).json({
+      message: 'Route optimization completed successfully',
+      route_optimization: {
+        id: optimizationId,
+        algorithm,
+        optimize_for,
+        total_duration_minutes: totalMetrics.totalDuration,
+        total_distance_meters: totalMetrics.totalDistance,
+        total_cost: totalMetrics.totalCost,
+        optimized_route: optimizedOrder,
+        segments,
+        statistics: {
+          destinations_count: optimizedOrder.length,
+          segments_count: segments.length,
+          average_speed_kmh: totalMetrics.totalDistance / (totalMetrics.totalDuration / 60),
+          cost_per_km: totalMetrics.totalDistance > 0 ? totalMetrics.totalCost / (totalMetrics.totalDistance / 1000) : 0
+        }
+      }
+    });
+  } catch (error: any) {
+    console.error('Route optimization error:', error);
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// Helper function to calculate distances between destinations
+function calculateDistances(destinations: any[]) {
+  const distances: any = {};
+  
+  for (let i = 0; i < destinations.length; i++) {
+    for (let j = 0; j < destinations.length; j++) {
+      if (i !== j) {
+        const from = destinations[i];
+        const to = destinations[j];
+        
+        // Simple Euclidean distance calculation (in real app, use actual routing API)
+        const dx = (to.latitude || 0) - (from.latitude || 0);
+        const dy = (to.longitude || 0) - (from.longitude || 0);
+        const distance = Math.sqrt(dx * dx + dy * dy) * 1000; // Convert to meters
+        
+        distances[`${from.id}-${to.id}`] = {
+          from_destination_id: from.id,
+          to_destination_id: to.id,
+          distance_meters: Math.round(distance),
+          duration_minutes: Math.round(distance / 80) // Assuming average walking speed of 80m/min
+        };
+      }
+    }
+  }
+  
+  return distances;
+}
+
+// Helper function to apply TSP algorithm
+function applyTSPAlgorithm(destinations: any[], distances: any, algorithm: string, optimize_for: string) {
+  switch (algorithm) {
+    case 'nearest_neighbor':
+      return nearestNeighborTSP(destinations, distances, optimize_for);
+    case 'genetic':
+      return geneticAlgorithmTSP(destinations, distances, optimize_for);
+    default:
+      return nearestNeighborTSP(destinations, distances, optimize_for);
+  }
+}
+
+// Nearest Neighbor TSP implementation
+function nearestNeighborTSP(destinations: any[], distances: any, optimize_for: string) {
+  const n = destinations.length;
+  const visited = new Array(n).fill(false);
+  const route = [];
+  
+  // Start from the first destination
+  let current = 0;
+  route.push(destinations[current]);
+  visited[current] = true;
+  
+  // Visit all other destinations
+  for (let i = 1; i < n; i++) {
+    let nearest = -1;
+    let minDistance = Infinity;
+    
+    // Find the nearest unvisited destination
+    for (let j = 0; j < n; j++) {
+      if (!visited[j]) {
+        const distance = distances[`${destinations[current].id}-${destinations[j].id}`];
+        if (distance && distance.distance_meters < minDistance) {
+          minDistance = distance.distance_meters;
+          nearest = j;
+        }
+      }
+    }
+    
+    if (nearest !== -1) {
+      current = nearest;
+      route.push(destinations[current]);
+      visited[current] = true;
+    }
+  }
+  
+  return route;
+}
+
+// Simple Genetic Algorithm for TSP
+function geneticAlgorithmTSP(destinations: any[], distances: any, optimize_for: string) {
+  const populationSize = 50;
+  const generations = 100;
+  const mutationRate = 0.1;
+  
+  // Initialize population with random routes
+  const population = [];
+  for (let i = 0; i < populationSize; i++) {
+    const route = [...destinations];
+    for (let j = route.length - 1; j > 0; j--) {
+      const k = Math.floor(Math.random() * (j + 1));
+      [route[j], route[k]] = [route[k], route[j]];
+    }
+    population.push(route);
+  }
+  
+  // Evolve population
+  for (let gen = 0; gen < generations; gen++) {
+    // Calculate fitness for each individual
+    const fitness = population.map((route: any[]) => calculateRouteFitness(route, distances, optimize_for));
+    
+    // Selection (tournament selection)
+    const newPopulation = [];
+    for (let i = 0; i < populationSize; i++) {
+      const parent1 = tournamentSelection(population, fitness);
+      const parent2 = tournamentSelection(population, fitness);
+      
+      // Crossover (ordered crossover)
+      const child = orderedCrossover(parent1, parent2);
+      
+      // Mutation
+      if (Math.random() < mutationRate) {
+        mutate(child);
+      }
+      
+      newPopulation.push(child);
+    }
+    
+    population.splice(0, populationSize, ...newPopulation);
+  }
+  
+  // Return the best route
+  const finalFitness = population.map(route => calculateRouteFitness(route, distances, optimize_for));
+  const bestIndex = finalFitness.indexOf(Math.min(...finalFitness));
+  return population[bestIndex];
+}
+
+// Helper function for tournament selection
+function tournamentSelection(population: any[], fitness: number[], tournamentSize = 3) {
+  const tournament = [];
+  for (let i = 0; i < tournamentSize; i++) {
+    const index = Math.floor(Math.random() * population.length);
+    tournament.push({ individual: population[index], fitness: fitness[index] });
+  }
+  
+  tournament.sort((a: any, b: any) => a.fitness - b.fitness);
+  return tournament[0].individual;
+}
+
+// Ordered crossover for TSP
+function orderedCrossover(parent1: any[], parent2: any[]) {
+  const start = Math.floor(Math.random() * parent1.length);
+  const end = Math.floor(Math.random() * (parent1.length - start)) + start;
+  
+  const child = new Array(parent1.length).fill(null);
+  
+  // Copy segment from parent1
+  for (let i = start; i < end; i++) {
+    child[i] = parent1[i];
+  }
+  
+  // Fill remaining positions from parent2
+  let childIndex = 0;
+  for (let i = 0; i < parent2.length; i++) {
+    if (!child.includes(parent2[i])) {
+      while (child[childIndex] !== null) childIndex++;
+      child[childIndex] = parent2[i];
+    }
+  }
+  
+  return child;
+}
+
+// Mutation function for genetic algorithm
+function mutate(route: any[]) {
+  const i = Math.floor(Math.random() * route.length);
+  const j = Math.floor(Math.random() * route.length);
+  [route[i], route[j]] = [route[j], route[i]];
+}
+
+// Calculate route fitness (lower is better)
+function calculateRouteFitness(route: any[], distances: any, optimize_for: string) {
+  let totalDistance = 0;
+  let totalDuration = 0;
+  
+  for (let i = 0; i < route.length - 1; i++) {
+    const segment = distances[`${route[i].id}-${route[i + 1].id}`];
+    if (segment) {
+      totalDistance += segment.distance_meters;
+      totalDuration += segment.duration_minutes;
+    }
+  }
+  
+  switch (optimize_for) {
+    case 'time':
+      return totalDuration;
+    case 'distance':
+      return totalDistance;
+    case 'cost':
+      return totalDistance * 0.03; // Simple cost estimation
+    default:
+      return totalDuration;
+  }
+}
+
+// Calculate route metrics
+function calculateRouteMetrics(route: any[], distances: any, transportationModes: any[]) {
+  let totalDistance = 0;
+  let totalDuration = 0;
+  let totalCost = 0;
+  
+  for (let i = 0; i < (route as any[]).length - 1; i++) {
+    const segment = distances[`${(route as any[])[i].id}-${(route as any[])[i + 1].id}`];
+    if (segment) {
+      totalDistance += segment.distance_meters;
+      totalDuration += segment.duration_minutes;
+      totalCost += segment.distance_meters * 0.03; // Simple cost calculation
+    }
+  }
+  
+  return {
+    totalDistance,
+    totalDuration,
+    totalCost
+  };
+}
+
+// Generate transportation segments for optimized route
+function generateTransportationSegments(route: any[], distances: any[], transportationModes: any[]) {
+  const segments = [];
+  
+  for (let i = 0; i < (route as any[]).length - 1; i++) {
+    const from = (route as any[])[i];
+    const to = (route as any[])[i + 1];
+    const segment = (distances as any)[`${from.id}-${to.id}`];
+    
+    if (segment) {
+      // Select best transportation mode for this segment
+      const bestMode = selectBestTransportMode(segment as any, transportationModes);
+      
+      segments.push({
+        from_destination_id: from.id,
+        to_destination_id: to.id,
+        transport_mode_id: bestMode.id,
+        duration_minutes: segment.duration_minutes,
+        distance_meters: segment.distance_meters,
+        cost: segment.distance_meters * bestMode.cost_per_km / 1000,
+        instructions: generateInstructions(from, to, bestMode),
+        departure_time: null, // Would be calculated based on timeline
+        arrival_time: null
+      });
+    }
+  }
+  
+  return segments;
+}
+
+// Select best transportation mode for a segment
+function selectBestTransportMode(segment: any, transportationModes: any[]) {
+  // For now, prefer walking for short distances, public for medium, taxi for long
+  if (segment.distance_meters < 1000) {
+    return transportationModes.find(mode => mode.type === 'walking') || transportationModes[0];
+  } else if (segment.distance_meters < 5000) {
+    return transportationModes.find(mode => mode.type === 'public') || transportationModes[1];
+  } else {
+    return transportationModes.find(mode => mode.type === 'taxi') || transportationModes[2];
+  }
+}
+
+// Generate navigation instructions
+function generateInstructions(from: any, to: any, mode: any) {
+  const instructions = [];
+  
+  instructions.push({
+    step: 1,
+    instruction: `從${from.name}出發`,
+    distance: 0,
+    duration: 0
+  });
+  
+  if (mode.type === 'walking') {
+    instructions.push({
+      step: 2,
+      instruction: `步行前往${to.name}`,
+      distance: `${Math.round(to.distance_meters / 1000)}公里`,
+      duration: `${Math.round(to.duration_minutes)}分鐘`
+    });
+  } else if (mode.type === 'public') {
+    instructions.push({
+      step: 2,
+      instruction: `搭乘大眾運輸前往${to.name}`,
+      distance: `${Math.round(to.distance_meters / 1000)}公里`,
+      duration: `${Math.round(to.duration_minutes)}分鐘`
+    });
+  } else if (mode.type === 'taxi') {
+    instructions.push({
+      step: 2,
+      instruction: `搭乘計程車前往${to.name}`,
+      distance: `${Math.round(to.distance_meters / 1000)}公里`,
+      duration: `${Math.round(to.duration_minutes)}分鐘`
+    });
+  }
+  
+  instructions.push({
+    step: 3,
+    instruction: `抵達${to.name}`,
+    distance: 0,
+    duration: 0
+  });
+  
+  return instructions;
+}
+
+// Error handling middleware
 process.on('SIGINT', () => {
   console.log('\n🛑 Received SIGINT, shutting down gracefully...');
   // TODO: Close database connection
@@ -865,6 +1919,31 @@ process.on('SIGTERM', () => {
   // TODO: Close database connection
   process.exit(0);
 });
+
+// Serve Flutter Web static files only for non-API requests
+const flutterBuildPath = path.join(__dirname, '../../app/build/web');
+if (fs.existsSync(flutterBuildPath)) {
+  // Serve static files for non-API requests
+  app.use(express.static(flutterBuildPath, { 
+    maxAge: '1h',
+    index: false // Don't serve index.html automatically
+  }));
+  
+  // Fallback to Flutter index.html for non-API requests
+  app.get('*', (req, res) => {
+    // Only serve index.html for non-API requests
+    if (!req.path.startsWith('/api/') && fs.existsSync(path.join(flutterBuildPath, 'index.html'))) {
+      res.sendFile(path.join(flutterBuildPath, 'index.html'));
+    } else {
+      res.status(404).json({ error: 'Not found' });
+    }
+  });
+} else {
+  // Fallback for non-API requests when no build exists
+  app.get('*', (_req, res) => {
+    res.status(404).json({ error: 'Not found' });
+  });
+}
 
 app.listen(PORT, () => {
   console.log(`🚀 ZenVoyage server running on http://localhost:${PORT}`);
