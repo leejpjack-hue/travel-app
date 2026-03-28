@@ -489,7 +489,7 @@ class _InTripScreenState extends State<InTripScreen> {
     try {
       final response = await _makeRequest(
         'GET',
-        'http://localhost:5005/api/trips/${widget.tripId}/navigation'
+        'http://localhost:6006/api/trips/${widget.tripId}/navigation'
       );
       if (response != null) {
         navigationData = jsonDecode(response);
@@ -505,7 +505,7 @@ class _InTripScreenState extends State<InTripScreen> {
     try {
       final response = await _makeRequest(
         'GET',
-        'http://localhost:5005/api/trips/${widget.tripId}/offline-status'
+        'http://localhost:6006/api/trips/${widget.tripId}/offline-status'
       );
       if (response != null) {
         offlineData = jsonDecode(response);
@@ -520,7 +520,7 @@ class _InTripScreenState extends State<InTripScreen> {
     try {
       final response = await _makeRequest(
         'GET',
-        'http://localhost:5005/api/trips/${widget.tripId}/gps-tracking/status'
+        'http://localhost:6006/api/trips/${widget.tripId}/gps-tracking/status'
       );
       if (response != null) {
         trackingData = jsonDecode(response);
@@ -536,7 +536,7 @@ class _InTripScreenState extends State<InTripScreen> {
     try {
       final response = await _makeRequest(
         'GET',
-        'http://localhost:5005/api/trips/${widget.tripId}/digital-tickets'
+        'http://localhost:6006/api/trips/${widget.tripId}/digital-tickets'
       );
       if (response != null) {
         final data = jsonDecode(response);
@@ -553,7 +553,7 @@ class _InTripScreenState extends State<InTripScreen> {
     try {
       final response = await _makeRequest(
         'GET',
-        'http://localhost:5005/api/trips/${widget.tripId}/alarms'
+        'http://localhost:6006/api/trips/${widget.tripId}/alarms'
       );
       if (response != null) {
         final data = jsonDecode(response);
@@ -570,7 +570,7 @@ class _InTripScreenState extends State<InTripScreen> {
     try {
       final response = await _makeRequest(
         'GET',
-        'http://localhost:5005/api/trips/${widget.tripId}/emergency-info'
+        'http://localhost:6006/api/trips/${widget.tripId}/emergency-info'
       );
       if (response != null) {
         emergencyInfo = jsonDecode(response);
@@ -586,7 +586,7 @@ class _InTripScreenState extends State<InTripScreen> {
     try {
       final response = await _makeRequest(
         'GET',
-        'http://localhost:5005/api/trips/${widget.tripId}/expenses'
+        'http://localhost:6006/api/trips/${widget.tripId}/expenses'
       );
       if (response != null) {
         final data = jsonDecode(response);
@@ -682,7 +682,7 @@ class _InTripScreenState extends State<InTripScreen> {
     try {
       final response = await _makeRequest(
         'GET',
-        'http://localhost:5005/api/trips/${widget.tripId}/offline-download'
+        'http://localhost:6006/api/trips/${widget.tripId}/offline-download'
       );
       if (response != null) {
         final data = jsonDecode(response);
@@ -705,14 +705,14 @@ class _InTripScreenState extends State<InTripScreen> {
         // Stop tracking
         await _makeRequest(
           'POST',
-          'http://localhost:5005/api/trips/${widget.tripId}/gps-tracking/stop'
+          'http://localhost:6006/api/trips/${widget.tripId}/gps-tracking/stop'
         );
         isTracking = false;
       } else {
         // Start tracking
         await _makeRequest(
           'POST',
-          'http://localhost:5005/api/trips/${widget.tripId}/gps-tracking/start'
+          'http://localhost:6006/api/trips/${widget.tripId}/gps-tracking/start'
         );
         isTracking = true;
       }
@@ -734,7 +734,7 @@ class _InTripScreenState extends State<InTripScreen> {
           try {
             final response = await _makeRequest(
               'POST',
-              'http://localhost:5005/api/trips/${widget.tripId}/digital-tickets',
+              'http://localhost:6006/api/trips/${widget.tripId}/digital-tickets',
               body: ticketData
             );
             
@@ -768,7 +768,7 @@ class _InTripScreenState extends State<InTripScreen> {
           try {
             final response = await _makeRequest(
               'POST',
-              'http://localhost:5005/api/trips/${widget.tripId}/alarms',
+              'http://localhost:6006/api/trips/${widget.tripId}/alarms',
               body: alarmData
             );
             
@@ -802,7 +802,7 @@ class _InTripScreenState extends State<InTripScreen> {
           try {
             final response = await _makeRequest(
               'POST',
-              'http://localhost:5005/api/trips/${widget.tripId}/emergency-contacts',
+              'http://localhost:6006/api/trips/${widget.tripId}/emergency-contacts',
               body: contactData
             );
             
@@ -832,7 +832,7 @@ class _InTripScreenState extends State<InTripScreen> {
           try {
             final response = await _makeRequest(
               'POST',
-              'http://localhost:5005/api/trips/${widget.tripId}/expenses',
+              'http://localhost:6006/api/trips/${widget.tripId}/expenses',
               body: expenseData
             );
             

@@ -486,6 +486,62 @@ function createTables() {
     initializeDefaultPoiTags();
 
     console.log('📍 POI & Content tables created/verified');
+
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS offline_downloads (
+        id TEXT PRIMARY KEY,
+        trip_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        package_size_mb REAL,
+        download_status TEXT DEFAULT 'pending',
+        package_url TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (trip_id) REFERENCES trips (id) ON DELETE CASCADE,
+        FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+      )
+    `);
+
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS emergency_services (
+        id TEXT PRIMARY KEY,
+        destination TEXT,
+        is_global BOOLEAN DEFAULT FALSE,
+        service_name TEXT NOT NULL,
+        phone TEXT NOT NULL,
+        description TEXT,
+        priority INTEGER DEFAULT 1,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (destination) REFERENCES trips (id) ON DELETE CASCADE
+      )
+    `);
+
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS medical_info (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        blood_type TEXT,
+        allergies TEXT,
+        medications TEXT,
+        emergency_notes TEXT,
+        insurance_provider TEXT,
+        insurance_policy_number TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+      )
+    `);
+
+    try { database.exec(`ALTER TABLE users ADD COLUMN transport_preferences TEXT`); } catch (e) {}
+    try { database.exec(`ALTER TABLE users ADD COLUMN schedule_preferences TEXT`); } catch (e) {}
+    try { database.exec(`ALTER TABLE trips ADD COLUMN tour_radius INTEGER DEFAULT 5000`); } catch (e) {}
+    try { database.exec(`ALTER TABLE trips ADD COLUMN max_destinations INTEGER DEFAULT 5`); } catch (e) {}
+    try { database.exec(`ALTER TABLE digital_tickets ADD COLUMN user_id TEXT`); } catch (e) {}
+    try { database.exec(`ALTER TABLE digital_tickets ADD COLUMN qr_code_data TEXT`); } catch (e) {}
+    try { database.exec(`ALTER TABLE digital_tickets ADD COLUMN pdf_attachments TEXT`); } catch (e) {}
+    try { database.exec(`ALTER TABLE collaborators ADD COLUMN updated_at DATETIME`); } catch (e) {}
+
+    console.log('🔧 Missing tables and columns added/verified');
   } catch (error) {
     console.error('❌ Failed to create tables:', error);
   }
@@ -558,7 +614,7 @@ function insertSampleJapanTickets() {
       return;
     }
     
-    // Sample JR Pass tickets
+    // Sample JR Pass tickets - FIXED data binding
     const jrPasses = [
       {
         ticket_name: 'JR Pass 7日券',
@@ -567,38 +623,38 @@ function insertSampleJapanTickets() {
         description: '日本全國鐵路7日通票，包括新幹線在內的大部分JR線路',
         price_yen: 29650,
         validity_days: 7,
-        coverage_areas: ['全国', '新幹線', 'JR在来線'],
-        conditions: {
+        coverage_areas: JSON.stringify(['全国', '新幹線', 'JR在来線']),
+        conditions: JSON.stringify({
           consecutive_use: true,
           seat_reservation: 'recommended',
           exchange_order_required: true
-        }
+        })
       },
       {
         ticket_name: '東京都内Pass',
         ticket_type: 'subway_pass',
         issuer: 'Tokyo Metro',
         description: '東京地下鐵24/48/72小時券',
-        price_yen: 800, // 24小时
+        price_yen: 800,
         validity_days: 1,
-        coverage_areas: ['Tokyo Metro lines'],
-        conditions: {
+        coverage_areas: JSON.stringify(['Tokyo Metro lines']),
+        conditions: JSON.stringify({
           consecutive_use: false,
           unlimited_ride: true
-        }
+        })
       },
       {
         ticket_name: 'Suica卡',
         ticket_type: 'ic_card',
         issuer: 'JR East',
         description: '可充值的IC卡，適用於全日本大部分交通工具',
-        price_yen: 2000, // 初始充值
+        price_yen: 2000,
         validity_days: null,
-        coverage_areas: ['全日本交通網'],
-        conditions: {
+        coverage_areas: JSON.stringify(['全日本交通網']),
+        conditions: JSON.stringify({
           refundable: true,
           minimum_charge: 1000
-        }
+        })
       }
     ];
     
@@ -617,8 +673,8 @@ function insertSampleJapanTickets() {
         ticket.description,
         ticket.price_yen,
         ticket.validity_days,
-        JSON.stringify(ticket.coverage_areas),
-        JSON.stringify(ticket.conditions),
+        ticket.coverage_areas,
+        ticket.conditions,
         true
       );
     }
@@ -815,8 +871,33 @@ function insertDefaultExpenseCategories() {
   }
 }
 
-// Create tables for Module 6: Export & AI (F47-F50)
-if (database) {
+// Drop and recreate offline_downloads table to add user_id column
+  try {
+    database.exec(`DROP TABLE IF EXISTS offline_downloads`);
+  } catch (error) {
+    console.log('⚠️ Could not drop offline_downloads table, may not exist:', error);
+  }
+  
+  database.exec(`
+    CREATE TABLE offline_downloads (
+      id TEXT PRIMARY KEY,
+      trip_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      package_type TEXT NOT NULL, -- 'map', 'timeline', 'poi', 'weather', 'emergency'
+      version TEXT NOT NULL,
+      file_url TEXT NOT NULL,
+      file_size_mb REAL NOT NULL,
+      download_status TEXT DEFAULT 'pending', -- 'pending', 'downloading', 'completed', 'failed'
+      last_downloaded_at DATETIME,
+      expires_at DATETIME,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (trip_id) REFERENCES trips (id) ON DELETE CASCADE,
+      FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+    )
+  `);
+
+  // Create tables for Module 6: Export & AI (F47-F50)
   database.exec(`
     CREATE TABLE IF NOT EXISTS trip_splits (
       id TEXT PRIMARY KEY,

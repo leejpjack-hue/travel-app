@@ -4,7 +4,7 @@ import '../models/trip.dart';
 import '../models/user.dart';
 
 class ApiService {
-  static const String _baseUrl = '/api';
+  static const String _baseUrl = 'http://localhost:6006';
 
   // Get headers with authorization token
   Map<String, String> _getHeaders({bool withAuth = true}) {

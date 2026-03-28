@@ -210,6 +210,69 @@ app.delete('/api/trips/:id', (req, res) => {
   }
 });
 
+// GET /api/trips/:id/destinations - List all destinations for a trip
+app.get('/api/trips/:id/destinations', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    const destinations = db.prepare('SELECT * FROM destinations WHERE trip_id = ? ORDER BY visit_date, order_index').all(req.params.id);
+    res.json({ destinations });
+  } catch (error: any) {
+    res.status(error.message?.includes('Unauthorized') ? 401 : 500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// POST /api/trips/:id/destinations - Add a new destination to a trip
+app.post('/api/trips/:id/destinations', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    const { name, type, description, latitude, longitude, address, visit_date, duration_hours, notes } = req.body;
+
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    if (!name || !type) {
+      return res.status(400).json({ error: 'Name and type are required' });
+    }
+
+    const id = generateUUID();
+    const now = new Date().toISOString();
+
+    db.prepare(`
+      INSERT INTO destinations (id, trip_id, name, type, description, latitude, longitude, address, visit_date, duration_hours, notes, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      id,
+      req.params.id,
+      name,
+      type,
+      description || null,
+      latitude || null,
+      longitude || null,
+      address || null,
+      visit_date || null,
+      duration_hours || null,
+      notes || null,
+      now,
+      now
+    );
+
+    const destination = db.prepare('SELECT * FROM destinations WHERE id = ?').get(id);
+    res.status(201).json({ destination });
+  } catch (error: any) {
+    res.status(error.message?.includes('Unauthorized') ? 401 : 500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
 // Module 1: Pre-trip & Preferences APIs
 
 // POST /api/trips/:id/import-flight - Import flight information
@@ -234,11 +297,7 @@ app.post('/api/trips/:id/import-flight', (req, res) => {
       flightId, 
       (trip as any).id, 
       `${airline} ${flight_number}` || 'Flight',
-      flight_number || '',
-      departure_time,
-      arrival_time,
       `${departure_airport} → ${arrival_airport}` || '',
-      'confirmed',
       now
     );
 
