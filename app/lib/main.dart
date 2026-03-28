@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'dart:convert';
-import 'dart:io';
 import 'package:http/http.dart' as http;
 import 'trip_create_screen.dart';
 import 'collaborators_screen.dart';
@@ -10,13 +9,38 @@ import 'poi_screen.dart';
 import 'in_trip_screen.dart';
 import 'shared_fund_screen.dart';
 import 'pdf_export_screen.dart';
+import 'login_screen.dart';
+import 'token_storage.dart';
+import 'models/trip.dart';
 
 void main() {
   runApp(const MyApp());
 }
 
-class MyApp extends StatelessWidget {
+class MyApp extends StatefulWidget {
   const MyApp({super.key});
+
+  @override
+  State<MyApp> createState() => _MyAppState();
+}
+
+class _MyAppState extends State<MyApp> {
+  bool _isLoggedIn = false;
+  bool _isChecking = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _checkAuth();
+  }
+
+  Future<void> _checkAuth() async {
+    final token = await TokenStorage.getToken();
+    setState(() {
+      _isLoggedIn = token != null && token.isNotEmpty;
+      _isChecking = false;
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -51,7 +75,13 @@ class MyApp extends StatelessWidget {
           fillColor: Colors.grey.shade50,
         ),
       ),
-      home: const HomeScreen(),
+      home: _isChecking
+          ? const Scaffold(body: Center(child: CircularProgressIndicator()))
+          : _isLoggedIn
+              ? const HomeScreen()
+              : LoginScreen(onLoginSuccess: () {
+                  setState(() => _isLoggedIn = true);
+                }),
     );
   }
 }
@@ -73,7 +103,7 @@ class _HomeScreenState extends State<HomeScreen> {
     const POIScreen(tripId: 'demo-trip-id'),
     const InTripScreen(tripId: 'demo-trip-id'),
     const SharedFundScreen(tripId: 'demo-trip-id'),
-    const PdfExportScreen(trip: Trip(id: 'demo-trip-id', name: '示範行程', destination: '示範目的地', startDate: DateTime.now(), endDate: DateTime.now().add(const Duration(days: 7)), status: 'draft')),
+    PdfExportScreen(trip: Trip(id: 'demo-trip-id', name: '示範行程', destination: '示範目的地', startDate: DateTime.now(), endDate: DateTime.now().add(const Duration(days: 7)), status: 'draft', createdAt: DateTime.now(), updatedAt: DateTime.now())),
   ];
 
   @override
@@ -598,9 +628,11 @@ class _InTripScreenState extends State<InTripScreen> {
     setState(() => isLoadingExpenses = false);
   }
 
+  static const String _serverBase = 'http://167.179.88.55:5005';
+
   Future<String?> _makeRequest(String method, String url, {Map<String, dynamic>? body}) async {
     final client = http.Client();
-    final request = http.Request(method, Uri.parse(url));
+    final request = http.Request(method, Uri.parse('$_serverBase$url'));
     
     if (body != null) {
       request.body = jsonEncode(body);
@@ -730,7 +762,7 @@ class _InTripScreenState extends State<InTripScreen> {
     await showDialog(
       context: context,
       builder: (context) => _AddTicketDialog(
-        onAdd: async (ticketData) {
+        onAdd: (ticketData) async {
           try {
             final response = await _makeRequest(
               'POST',
@@ -764,7 +796,7 @@ class _InTripScreenState extends State<InTripScreen> {
     await showDialog(
       context: context,
       builder: (context) => _AddAlarmDialog(
-        onAdd: async (alarmData) {
+        onAdd: (alarmData) async {
           try {
             final response = await _makeRequest(
               'POST',
@@ -798,7 +830,7 @@ class _InTripScreenState extends State<InTripScreen> {
     await showDialog(
       context: context,
       builder: (context) => _AddEmergencyContactDialog(
-        onAdd: async (contactData) {
+        onAdd: (contactData) async {
           try {
             final response = await _makeRequest(
               'POST',
@@ -828,7 +860,7 @@ class _InTripScreenState extends State<InTripScreen> {
     await showDialog(
       context: context,
       builder: (context) => _AddExpenseDialog(
-        onAdd: async (expenseData) {
+        onAdd: (expenseData) async {
           try {
             final response = await _makeRequest(
               'POST',

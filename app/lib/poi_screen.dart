@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'dart:convert';
-import 'dart:io';
 import 'package:http/http.dart' as http;
 
 class POIScreen extends StatefulWidget {
@@ -133,9 +132,11 @@ class _POIScreenState extends State<POIScreen> {
     }
   }
 
+  static const String _serverBase = 'http://167.179.88.55:5005';
+
   Future<String?> _makeRequest(String method, String url, {Map<String, dynamic>? body}) async {
     try {
-      final uri = Uri.parse(url);
+      final uri = Uri.parse('$_serverBase$url');
       final request = http.Request(method, uri);
       
       // Add headers
@@ -169,7 +170,7 @@ class _POIScreenState extends State<POIScreen> {
     await showDialog(
       context: context,
       builder: (context) => _AddPinDialog(
-        onAdd: async (pinData) {
+        onAdd: (pinData) async {
           try {
             final response = await _makeRequest(
               'POST',
@@ -746,6 +747,564 @@ class _POIScreenState extends State<POIScreen> {
       const SnackBar(content: Text('刪除功能開發中'))
     );
   }
+
+  // Add controllers for nearby search
+  final TextEditingController _latController = TextEditingController();
+  final TextEditingController _lngController = TextEditingController();
+  final TextEditingController _radiusController = TextEditingController(text: '1000');
+  final TextEditingController _nearbyTypeController = TextEditingController();
+
+  // State for new data
+  List<Map<String, dynamic>> crowdPrediction = [];
+  List<Map<String, dynamic>> poiFacilities = [];
+  Map<String, dynamic> _nearbyResults = {};
+  List<Map<String, dynamic>> experienceBookings = [];
+
+  // F32 - Crowd Prediction Tab
+  Widget _buildCrowdPredictionTab() {
+    if (crowdPrediction.isEmpty) {
+      return const Center(child: CircularProgressIndicator());
+    }
+
+    return RefreshIndicator(
+      onRefresh: _loadCrowdPrediction,
+      child: ListView.builder(
+        padding: const EdgeInsets.all(16),
+        itemCount: crowdPrediction.length,
+        itemBuilder: (context, index) {
+          final data = crowdPrediction[index];
+          final crowdColor = data['crowd_level'] < 30
+              ? Colors.green
+              : data['crowd_level'] < 70
+                  ? Colors.orange
+                  : Colors.red;
+
+          return Card(
+            elevation: 4,
+            margin: const EdgeInsets.only(bottom: 12),
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Icon(Icons.accessibility_new, color: crowdColor),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          data['name'],
+                          style: const TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: crowdColor.withOpacity(0.2),
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Text(
+                          data['crowd_status'],
+                          style: TextStyle(
+                            color: crowdColor,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      Icon(Icons.schedule, size: 16, color: Colors.grey.shade600),
+                      const SizedBox(width: 4),
+                      Text('預估等候時間: ${data['estimated_wait_time']}分鐘'),
+                      const Spacer(),
+                      Text(
+                        '人流密度: ${data['crowd_level']}%',
+                        style: TextStyle(color: crowdColor),
+                      ),
+                    ],
+                  ),
+                  if (data['time_factor'] != 1.0) ...[
+                    const SizedBox(height: 4),
+                    Text(
+                      '時間因素: ${(data['time_factor'] * 100).toInt()}%',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: Colors.grey.shade600,
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  // F34 - Facilities Search Tab
+  Widget _buildFacilitiesTab() {
+    if (poiFacilities.isEmpty) {
+      return const Center(child: CircularProgressIndicator());
+    }
+
+    return RefreshIndicator(
+      onRefresh: _loadFacilities,
+      child: ListView.builder(
+        padding: const EdgeInsets.all(16),
+        itemCount: poiFacilities.length,
+        itemBuilder: (context, index) {
+          final category = poiFacilities[index];
+          return Card(
+            elevation: 3,
+            margin: const EdgeInsets.only(bottom: 12),
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Text(
+                        category['category']['icon'],
+                        style: const TextStyle(fontSize: 24),
+                      ),
+                      const SizedBox(width: 8),
+                      Text(
+                        category['category']['name'],
+                        style: const TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  if (category['facilities'].isEmpty)
+                    const Text('附近沒有找到相關設施')
+                  else
+                    Column(
+                      children: (category['facilities'] as List).map((facility) {
+                        return Padding(
+                          padding: const EdgeInsets.only(bottom: 8),
+                          child: Row(
+                            children: [
+                              Icon(Icons.location_on, size: 16, color: Colors.grey.shade600),
+                              const SizedBox(width: 4),
+                              Expanded(
+                                child: Text(
+                                  '${facility['facility_name']} (${facility['distance']}m)',
+                                  style: const TextStyle(fontSize: 14),
+                                ),
+                              ),
+                              Icon(
+                                facility['is_available'] ? Icons.check_circle : Icons.cancel,
+                                color: facility['is_available']
+                                    ? Colors.green
+                                    : Colors.red,
+                                size: 16,
+                              ),
+                            ],
+                          ),
+                        );
+                      }).toList(),
+                    ),
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  // F36 - Nearby Search Tab
+  Widget _buildNearbySearchTab() {
+    return Column(
+      children: [
+        // Search controls
+        Card(
+          elevation: 2,
+          margin: const EdgeInsets.all(16),
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              children: [
+                Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        decoration: const InputDecoration(
+                          labelText: '緯度',
+                          border: OutlineInputBorder(),
+                        ),
+                        keyboardType: TextInputType.number,
+                        controller: _latController,
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: TextField(
+                        decoration: const InputDecoration(
+                          labelText: '經度',
+                          border: OutlineInputBorder(),
+                        ),
+                        keyboardType: TextInputType.number,
+                        controller: _lngController,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        decoration: const InputDecoration(
+                          labelText: '搜尋範圍 (公尺)',
+                          border: OutlineInputBorder(),
+                        ),
+                        keyboardType: TextInputType.number,
+                        controller: _radiusController,
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: TextField(
+                        decoration: const InputDecoration(
+                          labelText: '類型',
+                          border: OutlineInputBorder(),
+                        ),
+                        controller: _nearbyTypeController,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                ElevatedButton(
+                  onPressed: _loadNearbySearch,
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF4ECDC4),
+                  ),
+                  child: const Text('搜尋附近'),
+                ),
+              ],
+            ),
+          ),
+        ),
+
+        // Results
+        Expanded(
+          child: _nearbyResults.isEmpty
+              ? const Center(child: Text('請輸入座標並搜尋'))
+              : _buildNearbyResults(),
+        ),
+      ],
+    );
+  }
+
+  // F37 - Experience Booking Tab
+  Widget _buildExperienceBookingTab() {
+    return Column(
+      children: [
+        // Bookings list
+        Expanded(
+          child: experienceBookings.isEmpty
+              ? const Center(child: Text('尚無體驗預約'))
+              : RefreshIndicator(
+                  onRefresh: _loadExperienceBookings,
+                  child: ListView.builder(
+                    padding: const EdgeInsets.all(16),
+                    itemCount: experienceBookings.length,
+                    itemBuilder: (context, index) {
+                      final booking = experienceBookings[index];
+                      return Card(
+                        elevation: 3,
+                        margin: const EdgeInsets.only(bottom: 12),
+                        child: Padding(
+                          padding: const EdgeInsets.all(16),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(
+                                children: [
+                                  Icon(
+                                    booking['status'] == 'confirmed'
+                                        ? Icons.confirmation_number
+                                        : Icons.cancel,
+                                    color: booking['status'] == 'confirmed'
+                                        ? Colors.green
+                                        : Colors.red,
+                                  ),
+                                  const SizedBox(width: 8),
+                                  Expanded(
+                                    child: Text(
+                                      booking['experience_name'],
+                                      style: const TextStyle(
+                                        fontSize: 16,
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(height: 8),
+                              Text('日期: ${booking['date']}'),
+                              Text('時間: ${booking['start_time']} - ${booking['end_time']}'),
+                              Text('金額: ${booking['total_price']} TWD'),
+                              Text('狀態: ${booking['status']}'),
+                            ],
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+                ),
+        ),
+
+        // Add booking button
+        Padding(
+          padding: const EdgeInsets.all(16),
+          child: ElevatedButton(
+            onPressed: _addExperienceBooking,
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF4ECDC4),
+            ),
+            child: const Text('新增體驗預約'),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildNearbyResults() {
+    return RefreshIndicator(
+      onRefresh: _loadNearbySearch,
+      child: ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          // Restaurants
+          if ((_nearbyResults['restaurants'] as List).isNotEmpty) ...[
+            const Text(
+              '餐廳',
+              style: TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.bold,
+                color: Color(0xFF4ECDC4),
+              ),
+            ),
+            const SizedBox(height: 8),
+            ...(_nearbyResults['restaurants'] as List).map((restaurant) {
+              return Card(
+                elevation: 2,
+                margin: const EdgeInsets.only(bottom: 8),
+                child: Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Row(
+                    children: [
+                      Text(restaurant['icon'] ?? '🍽️'),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              restaurant['name'],
+                              style: const TextStyle(fontWeight: FontWeight.bold),
+                            ),
+                            Text(
+                              '${restaurant['distance']}m • ${restaurant['rating']} ⭐',
+                              style: TextStyle(color: Colors.grey.shade600),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            }).toList(),
+          ],
+
+          // Convenience stores
+          if ((_nearbyResults['convenience'] as List).isNotEmpty) ...[
+            const SizedBox(height: 16),
+            const Text(
+              '便利商店',
+              style: TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.bold,
+                color: Color(0xFF4ECDC4),
+              ),
+            ),
+            const SizedBox(height: 8),
+            ...(_nearbyResults['convenience'] as List).map((store) {
+              return Card(
+                elevation: 2,
+                margin: const EdgeInsets.only(bottom: 8),
+                child: Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Row(
+                    children: [
+                      Text(store['icon'] ?? '🏪'),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              store['name'],
+                              style: const TextStyle(fontWeight: FontWeight.bold),
+                            ),
+                            Text(
+                              '${store['distance']}m',
+                              style: TextStyle(color: Colors.grey.shade600),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            }).toList(),
+          ],
+        ],
+      ),
+    );
+  }
+
+  // Load functions for new tabs
+  Future<void> _loadCrowdPrediction() async {
+    try {
+      final response = await _makeRequest(
+        'GET',
+        '/api/trips/${widget.tripId}/crowd-prediction'
+      );
+
+      if (response != null) {
+        final data = jsonDecode(response);
+        setState(() {
+          crowdPrediction = List<Map<String, dynamic>>.from(
+            data['crowd_prediction'] ?? []
+          );
+        });
+      }
+    } catch (e) {
+      print('Error loading crowd prediction: $e');
+    }
+  }
+
+  Future<void> _loadFacilities() async {
+    try {
+      final response = await _makeRequest(
+        'GET',
+        '/api/trips/${widget.tripId}/poi-facilities'
+      );
+
+      if (response != null) {
+        final data = jsonDecode(response);
+        setState(() {
+          poiFacilities = List<Map<String, dynamic>>.from(
+            data['poi_facilities'] ?? []
+          );
+        });
+      }
+    } catch (e) {
+      print('Error loading facilities: $e');
+    }
+  }
+
+  Future<void> _loadNearbySearch() async {
+    try {
+      final lat = _latController.text;
+      final lng = _lngController.text;
+      final radius = _radiusController.text;
+      final type = _nearbyTypeController.text;
+
+      if (lat.isEmpty || lng.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('請輸入緯度和經度'))
+        );
+        return;
+      }
+
+      final response = await _makeRequest(
+        'GET',
+        '/api/trips/${widget.tripId}/nearby-search'
+            '?lat=$lat&lng=$lng&radius=$radius&type=$type'
+      );
+
+      if (response != null) {
+        final data = jsonDecode(response);
+        setState(() {
+          _nearbyResults = Map<String, dynamic>.from(
+            data['nearby_results'] ?? {}
+          );
+        });
+      }
+    } catch (e) {
+      print('Error loading nearby search: $e');
+    }
+  }
+
+  Future<void> _loadExperienceBookings() async {
+    try {
+      final response = await _makeRequest(
+        'GET',
+        '/api/trips/${widget.tripId}/experience-bookings'
+      );
+
+      if (response != null) {
+        final data = jsonDecode(response);
+        setState(() {
+          experienceBookings = List<Map<String, dynamic>>.from(
+            data['experience_bookings'] ?? []
+          );
+        });
+      }
+    } catch (e) {
+      print('Error loading experience bookings: $e');
+    }
+  }
+
+  Future<void> _addExperienceBooking() async {
+    await showDialog(
+      context: context,
+      builder: (context) => _AddExperienceBookingDialog(
+        onAdd: (bookingData) async {
+          try {
+            final response = await _makeRequest(
+              'POST',
+              '/api/trips/${widget.tripId}/experience-bookings',
+              body: bookingData
+            );
+
+            if (response != null) {
+              setState(() {
+                experienceBookings.add(jsonDecode(response)['booking']);
+              });
+              Navigator.pop(context);
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('體驗預約已建立'))
+              );
+              _loadExperienceBookings(); // Refresh list
+            }
+          } catch (e) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('建立失敗: $e'))
+            );
+          }
+        },
+      ),
+    );
+  }
 }
 
 // Dialog for adding experience bookings
@@ -998,7 +1557,6 @@ class _AddExperienceBookingDialogState extends State<_AddExperienceBookingDialog
     }
   }
 }
-}
 
 class _AddPinDialog extends StatefulWidget {
   final Function(Map<String, dynamic>) onAdd;
@@ -1180,7 +1738,7 @@ class _AddPinDialogState extends State<_AddPinDialog> {
                         contentPadding: EdgeInsets.zero,
                       ),
                       items: _colorOptions.map((color) {
-                        return DropdownMenuItem(
+                        return DropdownMenuItem<String>(
                           value: color['color'],
                           child: Row(
                             children: [
@@ -1239,564 +1797,4 @@ class _AddPinDialogState extends State<_AddPinDialog> {
       widget.onAdd(pinData);
     }
   }
-
-  // F32 - Crowd Prediction Tab
-  Widget _buildCrowdPredictionTab() {
-    if (crowdPrediction.isEmpty) {
-      return const Center(child: CircularProgressIndicator());
-    }
-
-    return RefreshIndicator(
-      onRefresh: _loadCrowdPrediction,
-      child: ListView.builder(
-        padding: const EdgeInsets.all(16),
-        itemCount: crowdPrediction.length,
-        itemBuilder: (context, index) {
-          final data = crowdPrediction[index];
-          final crowdColor = data['crowd_level'] < 30 
-              ? Colors.green 
-              : data['crowd_level'] < 70 
-                  ? Colors.orange 
-                  : Colors.red;
-
-          return Card(
-            elevation: 4,
-            margin: const EdgeInsets.only(bottom: 12),
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    children: [
-                      Icon(Icons.accessibility_new, color: crowdColor),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: Text(
-                          data['name'],
-                          style: const TextStyle(
-                            fontSize: 18,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                      ),
-                      Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                        decoration: BoxDecoration(
-                          color: crowdColor.withOpacity(0.2),
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                        child: Text(
-                          data['crowd_status'],
-                          style: TextStyle(
-                            color: crowdColor,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 8),
-                  Row(
-                    children: [
-                      Icon(Icons.schedule, size: 16, color: Colors.grey.shade600),
-                      const SizedBox(width: 4),
-                      Text('預估等候時間: ${data['estimated_wait_time']}分鐘'),
-                      const Spacer(),
-                      Text(
-                        '人流密度: ${data['crowd_level']}%',
-                        style: TextStyle(color: crowdColor),
-                      ),
-                    ],
-                  ),
-                  if (data['time_factor'] != 1.0) ...[
-                    const SizedBox(height: 4),
-                    Text(
-                      '時間因素: ${(data['time_factor'] * 100).toInt()}%',
-                      style: TextStyle(
-                        fontSize: 12,
-                        color: Colors.grey.shade600,
-                      ),
-                    ),
-                  ],
-                ],
-              ),
-            ),
-          );
-        },
-      ),
-    );
-  }
-
-  // F34 - Facilities Search Tab
-  Widget _buildFacilitiesTab() {
-    if (poiFacilities.isEmpty) {
-      return const Center(child: CircularProgressIndicator());
-    }
-
-    return RefreshIndicator(
-      onRefresh: _loadFacilities,
-      child: ListView.builder(
-        padding: const EdgeInsets.all(16),
-        itemCount: poiFacilities.length,
-        itemBuilder: (context, index) {
-          final category = poiFacilities[index];
-          return Card(
-            elevation: 3,
-            margin: const EdgeInsets.only(bottom: 12),
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    children: [
-                      Text(
-                        category['category']['icon'],
-                        style: const TextStyle(fontSize: 24),
-                      ),
-                      const SizedBox(width: 8),
-                      Text(
-                        category['category']['name'],
-                        style: const TextStyle(
-                          fontSize: 16,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 12),
-                  if (category['facilities'].isEmpty)
-                    const Text('附近沒有找到相關設施')
-                  else
-                    Column(
-                      children: (category['facilities'] as List).map((facility) {
-                        return Padding(
-                          padding: const EdgeInsets.only(bottom: 8),
-                          child: Row(
-                            children: [
-                              Icon(Icons.location_on, size: 16, color: Colors.grey.shade600),
-                              const SizedBox(width: 4),
-                              Expanded(
-                                child: Text(
-                                  '${facility['facility_name']} (${facility['distance']}m)',
-                                  style: const TextStyle(fontSize: 14),
-                                ),
-                              ),
-                              Icon(
-                                facility['is_available'] ? Icons.check_circle : Icons.cancel,
-                                color: facility['is_available'] 
-                                    ? Colors.green 
-                                    : Colors.red,
-                                size: 16,
-                              ),
-                            ],
-                          ),
-                        );
-                      }).toList(),
-                    ),
-                ],
-              ),
-            ),
-          );
-        },
-      ),
-    );
-  }
-
-  // F36 - Nearby Search Tab
-  Widget _buildNearbySearchTab() {
-    return Column(
-      children: [
-        // Search controls
-        Card(
-          elevation: 2,
-          margin: const EdgeInsets.all(16),
-          child: Padding(
-            padding: const EdgeInsets.all(16),
-            child: Column(
-              children: [
-                Row(
-                  children: [
-                    Expanded(
-                      child: TextField(
-                        decoration: const InputDecoration(
-                          labelText: '緯度',
-                          border: OutlineInputBorder(),
-                        ),
-                        keyboardType: TextInputType.number,
-                        controller: _latController,
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: TextField(
-                        decoration: const InputDecoration(
-                          labelText: '經度',
-                          border: OutlineInputBorder(),
-                        ),
-                        keyboardType: TextInputType.number,
-                        controller: _lngController,
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 12),
-                Row(
-                  children: [
-                    Expanded(
-                      child: TextField(
-                        decoration: const InputDecoration(
-                          labelText: '搜尋範圍 (公尺)',
-                          border: OutlineInputBorder(),
-                        ),
-                        keyboardType: TextInputType.number,
-                        controller: _radiusController,
-                        initialValue: '1000',
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: TextField(
-                        decoration: const InputDecoration(
-                          labelText: '類型',
-                          border: OutlineInputBorder(),
-                        ),
-                        controller: _typeController,
-                        initialValue: 'all',
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 12),
-                ElevatedButton(
-                  onPressed: _loadNearbySearch,
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFF4ECDC4),
-                  ),
-                  child: const Text('搜尋附近'),
-                ),
-              ],
-            ),
-          ),
-        ),
-        
-        // Results
-        Expanded(
-          child: _nearbyResults.isEmpty
-              ? const Center(child: Text('請輸入座標並搜尋'))
-              : _buildNearbyResults(),
-        ),
-      ],
-    );
-  }
-
-  // F37 - Experience Booking Tab
-  Widget _buildExperienceBookingTab() {
-    return Column(
-      children: [
-        // Bookings list
-        Expanded(
-          child: experienceBookings.isEmpty
-              ? const Center(child: Text('尚無體驗預約'))
-              : RefreshIndicator(
-                  onRefresh: _loadExperienceBookings,
-                  child: ListView.builder(
-                    padding: const EdgeInsets.all(16),
-                    itemCount: experienceBookings.length,
-                    itemBuilder: (context, index) {
-                      final booking = experienceBookings[index];
-                      return Card(
-                        elevation: 3,
-                        margin: const EdgeInsets.only(bottom: 12),
-                        child: Padding(
-                          padding: const EdgeInsets.all(16),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Row(
-                                children: [
-                                  Icon(
-                                    booking['status'] == 'confirmed' 
-                                        ? Icons.confirmation_number 
-                                        : Icons.cancel,
-                                    color: booking['status'] == 'confirmed' 
-                                        ? Colors.green 
-                                        : Colors.red,
-                                  ),
-                                  const SizedBox(width: 8),
-                                  Expanded(
-                                    child: Text(
-                                      booking['experience_name'],
-                                      style: const TextStyle(
-                                        fontSize: 16,
-                                        fontWeight: FontWeight.bold,
-                                      ),
-                                    ),
-                                  ),
-                                ],
-                              ),
-                              const SizedBox(height: 8),
-                              Text('日期: ${booking['date']}'),
-                              Text('時間: ${booking['start_time']} - ${booking['end_time']}'),
-                              Text('金額: ${booking['total_price']} TWD'),
-                              Text('狀態: ${booking['status']}'),
-                            ],
-                          ),
-                        ),
-                      );
-                    },
-                  ),
-                ),
-        ),
-        
-        // Add booking button
-        Padding(
-          padding: const EdgeInsets.all(16),
-          child: ElevatedButton(
-            onPressed: _addExperienceBooking,
-            style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFF4ECDC4),
-            ),
-            child: const Text('新增體驗預約'),
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildNearbyResults() {
-    return RefreshIndicator(
-      onRefresh: _loadNearbySearch,
-      child: ListView(
-        padding: const EdgeInsets.all(16),
-        children: [
-          // Restaurants
-          if ((_nearbyResults['restaurants'] as List).isNotEmpty) ...[
-            const Text(
-              '餐廳',
-              style: TextStyle(
-                fontSize: 18,
-                fontWeight: FontWeight.bold,
-                color: Color(0xFF4ECDC4),
-              ),
-            ),
-            const SizedBox(height: 8),
-            ...(_nearbyResults['restaurants'] as List).map((restaurant) {
-              return Card(
-                elevation: 2,
-                margin: const EdgeInsets.only(bottom: 8),
-                child: Padding(
-                  padding: const EdgeInsets.all(12),
-                  child: Row(
-                    children: [
-                      Text(restaurant['icon'] ?? '🍽️'),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              restaurant['name'],
-                              style: const TextStyle(fontWeight: FontWeight.bold),
-                            ),
-                            Text(
-                              '${restaurant['distance']}m • ${restaurant['rating']} ⭐',
-                              style: TextStyle(color: Colors.grey.shade600),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              );
-            }).toList(),
-          ],
-          
-          // Convenience stores
-          if ((_nearbyResults['convenience'] as List).isNotEmpty) ...[
-            const SizedBox(height: 16),
-            const Text(
-              '便利商店',
-              style: TextStyle(
-                fontSize: 18,
-                fontWeight: FontWeight.bold,
-                color: Color(0xFF4ECDC4),
-              ),
-            ),
-            const SizedBox(height: 8),
-            ...(_nearbyResults['convenience'] as List).map((store) {
-              return Card(
-                elevation: 2,
-                margin: const EdgeInsets.only(bottom: 8),
-                child: Padding(
-                  padding: const EdgeInsets.all(12),
-                  child: Row(
-                    children: [
-                      Text(store['icon'] ?? '🏪'),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              store['name'],
-                              style: const TextStyle(fontWeight: FontWeight.bold),
-                            ),
-                            Text(
-                              '${store['distance']}m',
-                              style: TextStyle(color: Colors.grey.shade600),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              );
-            }).toList(),
-          ],
-        ],
-      ),
-    );
-  }
-
-  // Load functions for new tabs
-  Future<void> _loadCrowdPrediction() async {
-    try {
-      final response = await _makeRequest(
-        'GET',
-        '/api/trips/${widget.tripId}/crowd-prediction'
-      );
-      
-      if (response != null) {
-        final data = jsonDecode(response);
-        setState(() {
-          crowdPrediction = List<Map<String, dynamic>>.from(
-            data['crowd_prediction'] ?? []
-          );
-        });
-      }
-    } catch (e) {
-      print('Error loading crowd prediction: $e');
-    }
-  }
-
-  Future<void> _loadFacilities() async {
-    try {
-      final response = await _makeRequest(
-        'GET',
-        '/api/trips/${widget.tripId}/poi-facilities'
-      );
-      
-      if (response != null) {
-        final data = jsonDecode(response);
-        setState(() {
-          poiFacilities = List<Map<String, dynamic>>.from(
-            data['poi_facilities'] ?? []
-          );
-        });
-      }
-    } catch (e) {
-      print('Error loading facilities: $e');
-    }
-  }
-
-  Future<void> _loadNearbySearch() async {
-    try {
-      final lat = _latController.text;
-      final lng = _lngController.text;
-      final radius = _radiusController.text;
-      final type = _typeController.text;
-      
-      if (lat.isEmpty || lng.isEmpty) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('請輸入緯度和經度'))
-        );
-        return;
-      }
-      
-      final response = await _makeRequest(
-        'GET',
-        '/api/trips/${widget.tripId}/nearby-search'
-            '?lat=$lat&lng=$lng&radius=$radius&type=$type'
-      );
-      
-      if (response != null) {
-        final data = jsonDecode(response);
-        setState(() {
-          _nearbyResults = Map<String, dynamic>.from(
-            data['nearby_results'] ?? {}
-          );
-        });
-      }
-    } catch (e) {
-      print('Error loading nearby search: $e');
-    }
-  }
-
-  Future<void> _loadExperienceBookings() async {
-    try {
-      final response = await _makeRequest(
-        'GET',
-        '/api/trips/${widget.tripId}/experience-bookings'
-      );
-      
-      if (response != null) {
-        final data = jsonDecode(response);
-        setState(() {
-          experienceBookings = List<Map<String, dynamic>>.from(
-            data['experience_bookings'] ?? []
-          );
-        });
-      }
-    } catch (e) {
-      print('Error loading experience bookings: $e');
-    }
-  }
-
-  Future<void> _addExperienceBooking() async {
-    await showDialog(
-      context: context,
-      builder: (context) => _AddExperienceBookingDialog(
-        onAdd: async (bookingData) {
-          try {
-            final response = await _makeRequest(
-              'POST',
-              '/api/trips/${widget.tripId}/experience-bookings',
-              body: bookingData
-            );
-            
-            if (response != null) {
-              setState(() {
-                experienceBookings.add(jsonDecode(response)['booking']);
-              });
-              Navigator.pop(context);
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('體驗預約已建立'))
-              );
-              _loadExperienceBookings(); // Refresh list
-            }
-          } catch (e) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text('建立失敗: $e'))
-            );
-          }
-        },
-      ),
-    );
-  }
-
-  // Add controllers for nearby search
-  final TextEditingController _latController = TextEditingController();
-  final TextEditingController _lngController = TextEditingController();
-  final TextEditingController _radiusController = TextEditingController();
-  final TextEditingController _typeController = TextEditingController();
-  
-  // State for new data
-  List<Map<String, dynamic>> crowdPrediction = [];
-  List<Map<String, dynamic>> poiFacilities = [];
-  Map<String, dynamic> _nearbyResults = {};
-  List<Map<String, dynamic>> experienceBookings = [];
 }

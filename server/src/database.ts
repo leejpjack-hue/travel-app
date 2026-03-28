@@ -23,8 +23,10 @@ export function initializeDatabase() {
 
     // Create tables
     createTables();
+    createModule5Tables();
+    createModule6Tables();
 
-    // Initialize Module 5 data
+    // Initialize default data
     insertDefaultExpenseCategories();
 
     console.log('🗄️ SQLite database initialized successfully');
@@ -34,10 +36,12 @@ export function initializeDatabase() {
     // Fallback to in-memory if file-based fails
     database = new Database(':memory:');
     createTables();
-    // Initialize Module 5 data (in-memory fallback)
+    createModule5Tables();
+    createModule6Tables();
     insertDefaultExpenseCategories();
     console.log('⚠️  Falling back to in-memory database');
   }
+}
 
 // Create database tables
 function createTables() {
@@ -686,7 +690,8 @@ function insertSampleJapanTickets() {
 }
 
 // Create Module 5: In-Trip Execution tables
-if (database) {
+function createModule5Tables() {
+  if (!database) { console.log("Database not initialized, skipping Module 5 tables"); return; }
   database.exec(`
     CREATE TABLE IF NOT EXISTS gps_tracking (
       id TEXT PRIMARY KEY,
@@ -717,23 +722,21 @@ if (database) {
       FOREIGN KEY (tracking_id) REFERENCES gps_tracking (id) ON DELETE CASCADE
   )
   `);
-}
 
-if (database) {
   database.exec(`
     CREATE TABLE IF NOT EXISTS digital_tickets (
       id TEXT PRIMARY KEY,
       trip_id TEXT NOT NULL,
-      ticket_type TEXT NOT NULL, -- 'ticket', 'pass', 'coupon'
+      ticket_type TEXT NOT NULL,
       ticket_name TEXT NOT NULL,
       provider_name TEXT,
       valid_from DATE,
       valid_until DATE,
       ticket_number TEXT,
-      file_url TEXT, -- PDF or image URL
+      file_url TEXT,
       file_size_mb REAL DEFAULT 0,
       qrcode_url TEXT,
-      status TEXT DEFAULT 'active', -- 'active', 'expired', 'used', 'cancelled'
+      status TEXT DEFAULT 'active',
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (trip_id) REFERENCES trips (id) ON DELETE CASCADE
@@ -746,23 +749,21 @@ if (database) {
       trip_id TEXT NOT NULL,
       user_id TEXT NOT NULL,
       timeline_item_id TEXT,
-    alarm_type TEXT NOT NULL, -- 'reminder', 'departure', 'arrival'
-    scheduled_time DATETIME NOT NULL,
-    reminder_message TEXT NOT NULL,
-    is_repeating BOOLEAN DEFAULT FALSE,
-    repeat_interval TEXT, -- JSON with repeat settings
-    is_active BOOLEAN DEFAULT TRUE,
-    triggered BOOLEAN DEFAULT FALSE,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (trip_id) REFERENCES trips (id) ON DELETE CASCADE,
-    FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE,
-    FOREIGN KEY (timeline_item_id) REFERENCES timeline_items (id) ON DELETE SET NULL
-  )
+      alarm_type TEXT NOT NULL,
+      scheduled_time DATETIME NOT NULL,
+      reminder_message TEXT NOT NULL,
+      is_repeating BOOLEAN DEFAULT FALSE,
+      repeat_interval TEXT,
+      is_active BOOLEAN DEFAULT TRUE,
+      triggered BOOLEAN DEFAULT FALSE,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (trip_id) REFERENCES trips (id) ON DELETE CASCADE,
+      FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE,
+      FOREIGN KEY (timeline_item_id) REFERENCES timeline_items (id) ON DELETE SET NULL
+    )
   `);
-}
 
-if (database) {
   database.exec(`
     CREATE TABLE IF NOT EXISTS emergency_contacts (
       id TEXT PRIMARY KEY,
@@ -776,55 +777,53 @@ if (database) {
       notes TEXT,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
-  )
-`);
-
-database.exec(`
-  CREATE TABLE IF NOT EXISTS trip_expenses (
-    id TEXT PRIMARY KEY,
-    trip_id TEXT NOT NULL,
-    user_id TEXT NOT NULL,
-    amount REAL NOT NULL,
-    currency TEXT NOT NULL DEFAULT 'TWD',
-    category_id TEXT NOT NULL,
-    description TEXT NOT NULL,
-    expense_date DATE NOT NULL,
-    location TEXT,
-    payment_method TEXT,
-    receipt_url TEXT,
-    exchange_rate_to_base REAL DEFAULT 1.0,
-    base_currency_amount REAL,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (trip_id) REFERENCES trips (id) ON DELETE CASCADE,
-    FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
-  )
-`);
-
-database.exec(`
-  CREATE TABLE IF NOT EXISTS expense_categories (
-    id TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    icon TEXT DEFAULT '💰',
-    color TEXT DEFAULT '#4ECDC4',
-    parent_category_id TEXT,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (parent_category_id) REFERENCES expense_categories (id) ON DELETE SET NULL
-  )
+      FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+    )
   `);
-}
 
-if (database) {
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS trip_expenses (
+      id TEXT PRIMARY KEY,
+      trip_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      amount REAL NOT NULL,
+      currency TEXT NOT NULL DEFAULT 'TWD',
+      category_id TEXT NOT NULL,
+      description TEXT NOT NULL,
+      expense_date DATE NOT NULL,
+      location TEXT,
+      payment_method TEXT,
+      receipt_url TEXT,
+      exchange_rate_to_base REAL DEFAULT 1.0,
+      base_currency_amount REAL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (trip_id) REFERENCES trips (id) ON DELETE CASCADE,
+      FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+    )
+  `);
+
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS expense_categories (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      icon TEXT DEFAULT '💰',
+      color TEXT DEFAULT '#4ECDC4',
+      parent_category_id TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (parent_category_id) REFERENCES expense_categories (id) ON DELETE SET NULL
+    )
+  `);
+
   database.exec(`
     CREATE TABLE IF NOT EXISTS offline_packages (
       id TEXT PRIMARY KEY,
       trip_id TEXT NOT NULL,
-      package_type TEXT NOT NULL, -- 'map', 'timeline', 'poi', 'weather', 'emergency'
+      package_type TEXT NOT NULL,
       version TEXT NOT NULL,
       file_url TEXT NOT NULL,
       file_size_mb REAL NOT NULL,
-      download_status TEXT DEFAULT 'pending', -- 'pending', 'downloading', 'completed', 'failed'
+      download_status TEXT DEFAULT 'pending',
       last_downloaded_at DATETIME,
       expires_at DATETIME,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -832,6 +831,8 @@ if (database) {
       FOREIGN KEY (trip_id) REFERENCES trips (id) ON DELETE CASCADE
     )
   `);
+
+  console.log('🚗 Module 5: In-Trip Execution tables created/verified');
 }
 
 // Insert default expense categories
@@ -871,13 +872,17 @@ function insertDefaultExpenseCategories() {
   }
 }
 
-// Drop and recreate offline_downloads table to add user_id column
+// Create Module 6 tables and migrations
+function createModule6Tables() {
+  if (!database) { console.log("Database not initialized, skipping Module 6 tables"); return; }
+
+  // Drop and recreate offline_downloads table to add user_id column
   try {
     database.exec(`DROP TABLE IF EXISTS offline_downloads`);
   } catch (error) {
     console.log('⚠️ Could not drop offline_downloads table, may not exist:', error);
   }
-  
+
   database.exec(`
     CREATE TABLE offline_downloads (
       id TEXT PRIMARY KEY,
@@ -978,10 +983,9 @@ function insertDefaultExpenseCategories() {
       FOREIGN KEY (trip_id) REFERENCES trips (id) ON DELETE CASCADE
     )
   `);
-}
 
-console.log('🚗 Module 5: In-Trip Execution tables created/verified');
-console.log('🎯 Module 6: Export & AI tables created/verified');
+  console.log('🎯 Module 6: Export & AI tables created/verified');
+}
 
 // Export database for direct use
 export { database };

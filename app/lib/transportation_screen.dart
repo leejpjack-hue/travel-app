@@ -31,7 +31,7 @@ class _TransportationPlanningScreenState extends State<TransportationPlanningScr
   Future<void> _loadTransportationModes() async {
     try {
       final response = await http.get(
-        Uri.parse('/api/trips/${widget.tripId}/transportation-modes'),
+        Uri.parse('http://167.179.88.55:5005/api/trips/${widget.tripId}/transportation-modes'),
         headers: {'Content-Type': 'application/json'},
       );
 
@@ -52,7 +52,7 @@ class _TransportationPlanningScreenState extends State<TransportationPlanningScr
   Future<void> _loadOptimizations() async {
     try {
       final response = await http.get(
-        Uri.parse('/api/trips/${widget.tripId}/route-optimizations'),
+        Uri.parse('http://167.179.88.55:5005/api/trips/${widget.tripId}/route-optimizations'),
         headers: {'Content-Type': 'application/json'},
       );
 
@@ -75,7 +75,7 @@ class _TransportationPlanningScreenState extends State<TransportationPlanningScr
 
     try {
       final response = await http.post(
-        Uri.parse('/api/trips/${widget.tripId}/transportation-modes'),
+        Uri.parse('http://167.179.88.55:5005/api/trips/${widget.tripId}/transportation-modes'),
         headers: {'Content-Type': 'application/json'},
         body: json.encode({
           'name': modeNameController.text,
@@ -108,7 +108,7 @@ class _TransportationPlanningScreenState extends State<TransportationPlanningScr
       });
 
       final response = await http.post(
-        Uri.parse('/api/trips/${widget.tripId}/route-optimization'),
+        Uri.parse('http://167.179.88.55:5005/api/trips/${widget.tripId}/route-optimization'),
         headers: {'Content-Type': 'application/json'},
         body: json.encode({
           'algorithm': 'nearest_neighbor',
@@ -264,7 +264,7 @@ class _TransportationPlanningScreenState extends State<TransportationPlanningScr
                               ),
                               Spacer(),
                               ElevatedButton.icon(
-                                icon: Icon(Icons.optimize),
+                                icon: Icon(Icons.auto_fix_high),
                                 label: Text('最佳化路線'),
                                 onPressed: _optimizeRoute,
                                 style: ElevatedButton.styleFrom(

@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
-import 'dart:io';
+import 'token_storage.dart';
 
 class CollaboratorsScreen extends StatefulWidget {
   final String tripId;
@@ -40,15 +40,7 @@ class _CollaboratorsScreenState extends State<CollaboratorsScreen> {
   }
 
   Future<String?> _getStoredToken() async {
-    try {
-      final file = File('/tmp/travel_app_token.txt');
-      if (await file.exists()) {
-        return await file.readAsString();
-      }
-    } catch (e) {
-      print('Error loading token: $e');
-    }
-    return null;
+    return await TokenStorage.getToken();
   }
 
   Future<void> _loadCollaborators() async {
@@ -59,7 +51,7 @@ class _CollaboratorsScreenState extends State<CollaboratorsScreen> {
     });
 
     try {
-      final url = Uri.parse('/api/trips/${widget.tripId}/collaborators');
+      final url = Uri.parse('http://167.179.88.55:5005/api/trips/${widget.tripId}/collaborators');
       final response = await http.get(
         url,
         headers: {
@@ -96,7 +88,7 @@ class _CollaboratorsScreenState extends State<CollaboratorsScreen> {
     });
 
     try {
-      final url = Uri.parse('/api/trips/${widget.tripId}/collaborators');
+      final url = Uri.parse('http://167.179.88.55:5005/api/trips/${widget.tripId}/collaborators');
       final response = await http.post(
         url,
         headers: {
@@ -118,7 +110,7 @@ class _CollaboratorsScreenState extends State<CollaboratorsScreen> {
         });
         _loadCollaborators();
       } else {
-        final error = json.decode(response.body)['error'] || '添加協作者失敗';
+        final error = json.decode(response.body)['error'] ?? '添加協作者失敗';
         _showErrorDialog('錯誤: $error');
       }
     } catch (e) {
@@ -136,7 +128,7 @@ class _CollaboratorsScreenState extends State<CollaboratorsScreen> {
     });
 
     try {
-      final url = Uri.parse('/api/trips/${widget.tripId}/collaborators/$collaboratorId');
+      final url = Uri.parse('http://167.179.88.55:5005/api/trips/${widget.tripId}/collaborators/$collaboratorId');
       final response = await http.delete(
         url,
         headers: {

@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'dart:convert';
-import 'dart:io';
 import 'package:http/http.dart' as http;
 
 class SharedFundScreen extends StatefulWidget {
@@ -32,7 +31,7 @@ class _SharedFundScreenState extends State<SharedFundScreen> {
     
     try {
       final response = await http.get(
-        Uri.parse('/api/trips/${widget.tripId}/splits'),
+        Uri.parse('http://167.179.88.55:5005/api/trips/${widget.tripId}/splits'),
         headers: {
           'Content-Type': 'application/json',
           // Add authentication header if needed
@@ -69,7 +68,7 @@ class _SharedFundScreenState extends State<SharedFundScreen> {
 
     try {
       final response = await http.post(
-        Uri.parse('/api/trips/${widget.tripId}/splits'),
+        Uri.parse('http://167.179.88.55:5005/api/trips/${widget.tripId}/splits'),
         headers: {
           'Content-Type': 'application/json',
         },
@@ -99,16 +98,16 @@ class _SharedFundScreenState extends State<SharedFundScreen> {
   }
 
   Future<void> _addItem(String splitId) async {
+    final amountController = TextEditingController();
+    final descriptionController = TextEditingController();
+    final categoryController = TextEditingController(text: '飲食');
+
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('添加費用項目'),
         content: StatefulBuilder(
           builder: (context, setState) {
-            final amountController = TextEditingController();
-            final descriptionController = TextEditingController();
-            final categoryController = TextEditingController();
-            
             return Form(
               child: Column(
                 mainAxisSize: MainAxisSize.min,
@@ -142,7 +141,6 @@ class _SharedFundScreenState extends State<SharedFundScreen> {
                   TextFormField(
                     controller: categoryController,
                     decoration: const InputDecoration(labelText: '類別 (可選)'),
-                    initialValue: '飲食',
                   ),
                 ],
               ),
@@ -160,7 +158,7 @@ class _SharedFundScreenState extends State<SharedFundScreen> {
               if (form!.validate()) {
                 try {
                   final response = await http.post(
-                    Uri.parse('/api/trips/${widget.tripId}/splits/$splitId/items'),
+                    Uri.parse('http://167.179.88.55:5005/api/trips/${widget.tripId}/splits/$splitId/items'),
                     headers: {
                       'Content-Type': 'application/json',
                     },
@@ -331,7 +329,7 @@ class _SharedFundScreenState extends State<SharedFundScreen> {
               const Text('參與者:'),
               const SizedBox(height: 8),
               ...(split['participants'] as List).map((participant) {
-                return Text('• ${participant['user_id]}: ¥${participant['amount_owed']} (已付: ¥${participant['amount_paid']})');
+                return Text('• ${participant['user_id']}: ¥${participant['amount_owed']} (已付: ¥${participant['amount_paid']})');
               }).toList(),
             ],
           ),
@@ -485,7 +483,7 @@ class _SharedFundScreenState extends State<SharedFundScreen> {
                     spacing: 8,
                     children: [
                       // Add demo participants (in real app, fetch from trip collaborators)
-                      ['user1', 'user2', 'user3', 'user4', 'user5'].map((userId) {
+                      ...['user1', 'user2', 'user3', 'user4', 'user5'].map((userId) {
                         final isSelected = tempSelectedParticipants.contains(userId);
                         return FilterChip(
                           label: Text('使用者 $userId'),
@@ -554,7 +552,7 @@ class _SharedFundScreenState extends State<SharedFundScreen> {
   Future<void> _settleSplit(String splitId) async {
     try {
       final response = await http.post(
-        Uri.parse('/api/trips/${widget.tripId}/splits/$splitId/settle'),
+        Uri.parse('http://167.179.88.55:5005/api/trips/${widget.tripId}/splits/$splitId/settle'),
         headers: {
           'Content-Type': 'application/json',
         },

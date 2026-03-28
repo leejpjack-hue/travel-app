@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'dart:convert';
-import 'dart:io';
 import 'package:http/http.dart' as http;
 
 class InTripScreen extends StatefulWidget {
@@ -176,9 +175,11 @@ class _InTripScreenState extends State<InTripScreen> {
     setState(() => isLoadingExpenses = false);
   }
 
+  static const String _serverBase = 'http://167.179.88.55:5005';
+
   Future<String?> _makeRequest(String method, String url, {Map<String, dynamic>? body}) async {
     final client = http.Client();
-    final request = http.Request(method, Uri.parse(url));
+    final request = http.Request(method, Uri.parse('$_serverBase$url'));
     
     if (body != null) {
       request.body = jsonEncode(body);
@@ -308,7 +309,7 @@ class _InTripScreenState extends State<InTripScreen> {
     await showDialog(
       context: context,
       builder: (context) => _AddTicketDialog(
-        onAdd: async (ticketData) {
+        onAdd: (ticketData) async {
           try {
             final response = await _makeRequest(
               'POST',
@@ -342,7 +343,7 @@ class _InTripScreenState extends State<InTripScreen> {
     await showDialog(
       context: context,
       builder: (context) => _AddAlarmDialog(
-        onAdd: async (alarmData) {
+        onAdd: (alarmData) async {
           try {
             final response = await _makeRequest(
               'POST',
@@ -376,7 +377,7 @@ class _InTripScreenState extends State<InTripScreen> {
     await showDialog(
       context: context,
       builder: (context) => _AddEmergencyContactDialog(
-        onAdd: async (contactData) {
+        onAdd: (contactData) async {
           try {
             final response = await _makeRequest(
               'POST',
@@ -406,7 +407,7 @@ class _InTripScreenState extends State<InTripScreen> {
     await showDialog(
       context: context,
       builder: (context) => _AddExpenseDialog(
-        onAdd: async (expenseData) {
+        onAdd: (expenseData) async {
           try {
             final response = await _makeRequest(
               'POST',

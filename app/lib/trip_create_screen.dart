@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
-import 'dart:io';
+import 'token_storage.dart';
 
 class TripCreateScreen extends StatefulWidget {
   const TripCreateScreen({super.key});
@@ -36,16 +36,7 @@ class _TripCreateScreenState extends State<TripCreateScreen> {
   }
 
   Future<String?> _getStoredToken() async {
-    // Mock implementation - replace with actual token storage
-    try {
-      final file = File('/tmp/travel_app_token.txt');
-      if (await file.exists()) {
-        return await file.readAsString();
-      }
-    } catch (e) {
-      print('Error loading token: $e');
-    }
-    return null;
+    return await TokenStorage.getToken();
   }
 
   Future<void> _createTrip() async {
@@ -56,7 +47,7 @@ class _TripCreateScreenState extends State<TripCreateScreen> {
     });
 
     try {
-      final url = Uri.parse('/api/trips');
+      final url = Uri.parse('http://167.179.88.55:5005/api/trips');
       final response = await http.post(
         url,
         headers: {
@@ -77,7 +68,7 @@ class _TripCreateScreenState extends State<TripCreateScreen> {
         _showSuccessDialog('行程已成功創建！');
         _formKey.currentState?.reset();
       } else {
-        final error = json.decode(response.body)['error'] || '創建行程失敗';
+        final error = json.decode(response.body)['error'] ?? '創建行程失敗';
         _showErrorDialog('錯誤: $error');
       }
     } catch (e) {
@@ -114,7 +105,7 @@ class _TripCreateScreenState extends State<TripCreateScreen> {
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
-            child: const Text確定),
+            child: const Text('確定'),
           ),
         ],
       ),
@@ -243,7 +234,7 @@ class _TripCreateScreenState extends State<TripCreateScreen> {
                 width: double.infinity,
                 child: ElevatedButton(
                   onPressed: _isLoading ? null : _createTrip,
-                  style: ElevatedButton.style(
+                  style: ElevatedButton.styleFrom(
                     backgroundColor: const Color(0xFF4ECDC4),
                     foregroundColor: Colors.white,
                     padding: const EdgeInsets.symmetric(vertical: 16),
@@ -366,7 +357,7 @@ class _TripCreateScreenState extends State<TripCreateScreen> {
     );
 
     if (picked != null) {
-      controller.text = picked.toIso8601Date().substring(0, 10);
+      controller.text = picked.toIso8601String().substring(0, 10);
     }
   }
 }

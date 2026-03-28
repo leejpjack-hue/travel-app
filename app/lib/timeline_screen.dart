@@ -32,7 +32,7 @@ class _TimelineScreenState extends State<TimelineScreen> {
   Future<void> _loadTimeline() async {
     try {
       final response = await http.get(
-        Uri.parse('http://127.0.0.1:5005/api/trips/${widget.tripId}/timeline'),
+        Uri.parse('http://167.179.88.55:5005/api/trips/${widget.tripId}/timeline'),
         headers: {
           'Content-Type': 'application/json',
           'Authorization': 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOiIwMDViYjJkNC1jODFjLTRiYzQtOTBkNi04Mzg1MTg4OGIyNjEiLCJlbWFpbCI6ImphY2tAdnVsdHIuZ3Vlc3QiLCJpYXQiOjE3NzQ2NjkzMjEsImV4cCI6MTc3NDc1NTcyMX0=.eFPp0yyPw2dq5lA35kVm6gBWqF5qTI55xsvLkhth6Zw='
@@ -64,7 +64,7 @@ class _TimelineScreenState extends State<TimelineScreen> {
   Future<void> _loadTravelTimes() async {
     try {
       final response = await http.get(
-        Uri.parse('http://127.0.0.1:5005/api/trips/${widget.tripId}/travel-times'),
+        Uri.parse('http://167.179.88.55:5005/api/trips/${widget.tripId}/travel-times'),
         headers: {
           'Content-Type': 'application/json',
           'Authorization': 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOiIwMDViYjJkNC1jODFjLTRiYzQtOTBkNi04Mzg1MTg4OGIyNjEiLCJlbWFpbCI6ImphY2tAdnVsdHIuZ3Vlc3QiLCJpYXQiOjE3NzQ2NjkzMjEsImV4cCI6MTc3NDc1NTcyMX0=.eFPp0yyPw2dq5lA35kVm6gBWqF5qTI55xsvLkhth6Zw='
@@ -147,7 +147,7 @@ class _TimelineScreenState extends State<TimelineScreen> {
 
               try {
                 final response = await http.post(
-                  Uri.parse('http://127.0.0.1:5005/api/trips/${widget.tripId}/timeline'),
+                  Uri.parse('http://167.179.88.55:5005/api/trips/${widget.tripId}/timeline'),
                   headers: {
                     'Content-Type': 'application/json',
                     'Authorization': 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOiIwMDViYjJkNC1jODFjLTRiYzQtOTBkNi04Mzg1MTg4OGIyNjEiLCJlbWFpbCI6ImphY2tAdnVsdHIuZ3Vlc3QiLCJpYXQiOjE3NzQ2NjkzMjEsImV4cCI6MTc3NDc1NTcyMX0=.eFPp0yyPw2dq5lA35kVm6gBWqF5qTI55xsvLkhth6Zw='
@@ -157,8 +157,8 @@ class _TimelineScreenState extends State<TimelineScreen> {
                     'type': typeController.text,
                     'start_time': startTimeController.text,
                     'end_time': endTimeController.text,
-                    'duration_minutes': int.tryParse(endTimeController.text.split(' ')[1].split(':')[0]) - 
-                                      int.tryParse(startTimeController.text.split(' ')[1].split(':')[0]),
+                    'duration_minutes': (int.tryParse(endTimeController.text.split(' ')[1].split(':')[0]) ?? 0) -
+                                      (int.tryParse(startTimeController.text.split(' ')[1].split(':')[0]) ?? 0),
                   }),
                 );
 
@@ -189,7 +189,7 @@ class _TimelineScreenState extends State<TimelineScreen> {
   Future<void> _checkConflicts() async {
     try {
       final response = await http.get(
-        Uri.parse('http://127.0.0.1:5005/api/trips/${widget.tripId}/timeline/conflicts'),
+        Uri.parse('http://167.179.88.55:5005/api/trips/${widget.tripId}/timeline/conflicts'),
         headers: {
           'Content-Type': 'application/json',
           'Authorization': 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOiIwMDViYjJkNC1jODFjLTRiYzQtOTBkNi04Mzg1MTg4OGIyNjEiLCJlbWFpbCI6ImphY2tAdnVsdHIuZ3Vlc3QiLCJpYXQiOjE3NzQ2NjkzMjEsImV4cCI6MTc3NDc1NTcyMX0=.eFPp0yyPw2dq5lA35kVm6gBWqF5qTI55xsvLkhth6Zw='
@@ -273,7 +273,7 @@ class _TimelineScreenState extends State<TimelineScreen> {
 
     try {
       final response = await http.put(
-        Uri.parse('http://127.0.0.1:5005/api/trips/${widget.tripId}/timeline/reorder'),
+        Uri.parse('http://167.179.88.55:5005/api/trips/${widget.tripId}/timeline/reorder'),
         headers: {
           'Content-Type': 'application/json',
           'Authorization': 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOiIwMDViYjJkNC1jODFjLTRiYzQtOTBkNi04Mzg1MTg4OGIyNjEiLCJlbWFpbCI6ImphY2tAdnVsdHIuZ3Vlc3QiLCJpYXQiOjE3NzQ2NjkzMjEsImV4cCI6MTc3NDc1NTcyMX0=.eFPp0yyPw2dq5lA35kVm6gBWqF5qTI55xsvLkhth6Zw='
@@ -303,7 +303,7 @@ class _TimelineScreenState extends State<TimelineScreen> {
   Future<void> _lockTimelineItem(String itemId, bool isLocked) async {
     try {
       final response = await http.put(
-        Uri.parse('http://127.0.0.1:5005/api/trips/${widget.tripId}/timeline/$itemId'),
+        Uri.parse('http://167.179.88.55:5005/api/trips/${widget.tripId}/timeline/$itemId'),
         headers: {
           'Content-Type': 'application/json',
           'Authorization': 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOiIwMDViYjJkNC1jODFjLTRiYzQtOTBkNi04Mzg1MTg4OGIyNjEiLCJlbWFpbCI6ImphY2tAdnVsdHIuZ3Vlc3QiLCJpYXQiOjE3NzQ2NjkzMjEsImV4cCI6MTc3NDc1NTcyMX0=.eFPp0yyPw2dq5lA35kVm6gBWqF5qTI55xsvLkhth6Zw='
@@ -406,7 +406,7 @@ class _TimelineScreenState extends State<TimelineScreen> {
             onPressed: () async {
               try {
                 final response = await http.put(
-                  Uri.parse('http://127.0.0.1:5005/api/trips/${widget.tripId}/timeline/${item['id']}'),
+                  Uri.parse('http://167.179.88.55:5005/api/trips/${widget.tripId}/timeline/${item['id']}'),
                   headers: {
                     'Content-Type': 'application/json',
                     'Authorization': 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOiIwMDViYjJkNC1jODFjLTRiYzQtOTBkNi04Mzg1MTg4OGIyNjEiLCJlbWFpbCI6ImphY2tAdnVsdHIuZ3Vlc3QiLCJpYXQiOjE3NzQ2NjkzMjEsImV4cCI6MTc3NDc1NTcyMX0=.eFPp0yyPw2dq5lA35kVm6gBWqF5qTI55xsvLkhth6Zw='
@@ -456,7 +456,7 @@ class _TimelineScreenState extends State<TimelineScreen> {
             onPressed: () async {
               try {
                 final response = await http.delete(
-                  Uri.parse('http://127.0.0.1:5005/api/trips/${widget.tripId}/timeline/${item['id']}'),
+                  Uri.parse('http://167.179.88.55:5005/api/trips/${widget.tripId}/timeline/${item['id']}'),
                   headers: {
                     'Content-Type': 'application/json',
                     'Authorization': 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOiIwMDViYjJkNC1jODFjLTRiYzQtOTBkNi04Mzg1MTg4OGIyNjEiLCJlbWFpbCI6ImphY2tAdnVsdHIuZ3Vlc3QiLCJpYXQiOjE3NzQ2NjkzMjEsImV4cCI6MTc3NDc1NTcyMX0=.eFPp0yyPw2dq5lA35kVm6gBWqF5qTI55xsvLkhth6Zw='
@@ -850,7 +850,7 @@ class _TimelineScreenState extends State<TimelineScreen> {
   Future<void> _fillGap(String gapStart, String gapEnd) async {
     try {
       final response = await http.post(
-        Uri.parse('http://127.0.0.1:5005/api/trips/${widget.tripId}/timeline/smart-fill'),
+        Uri.parse('http://167.179.88.55:5005/api/trips/${widget.tripId}/timeline/smart-fill'),
         headers: {
           'Content-Type': 'application/json',
           'Authorization': 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOiIwMDViYjJkNC1jODFjLTRiYzQtOTBkNi04Mzg1MTg4OGIyNjEiLCJlbWFpbCI6ImphY2tAdnVsdHIuZ3Vlc3QiLCJpYXQiOjE3NzQ2NjkzMjEsImV4cCI6MTc3NDc1NTcyMX0=.eFPp0yyPw2dq5lA35kVm6gBWqF5qTI55xsvLkhth6Zw='

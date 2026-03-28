@@ -493,7 +493,7 @@ class _PdfExportScreenState extends State<PdfExportScreen> {
         try {
           final errorBody = json.decode(response.body);
           errorMsg = errorBody['error'] ?? errorMsg;
-        } catch {}
+        } catch (_) {}
         setState(() {
           _isExporting = false;
           _exportError = errorMsg;

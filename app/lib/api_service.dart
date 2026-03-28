@@ -1,23 +1,24 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
-import '../models/trip.dart';
-import '../models/user.dart';
+import 'token_storage.dart';
 
 class ApiService {
-  static const String _baseUrl = '';
+  static const String _baseUrl = 'http://167.179.88.55:5005';
 
   // Get headers with authorization token
-  Map<String, String> _getHeaders({bool withAuth = true}) {
+  Future<Map<String, String>> _getHeaders({bool withAuth = true}) async {
     final headers = {
       'Content-Type': 'application/json',
       'Accept': 'application/json',
     };
-    
-    // Add authorization token if needed (in real app, you'd get this from storage)
+
     if (withAuth) {
-      headers['Authorization'] = 'Bearer YOUR_TOKEN_HERE'; // Replace with actual token
+      final token = await TokenStorage.getToken();
+      if (token != null) {
+        headers['Authorization'] = 'Bearer $token';
+      }
     }
-    
+
     return headers;
   }
 
@@ -31,7 +32,7 @@ class ApiService {
     
     return await http.post(
       url,
-      headers: _getHeaders(withAuth: false),
+      headers: await _getHeaders(withAuth: false),
       body: body,
     );
   }
@@ -43,10 +44,10 @@ class ApiService {
       'name': name,
       'password': password,
     });
-    
+
     return await http.post(
       url,
-      headers: _getHeaders(withAuth: false),
+      headers: await _getHeaders(withAuth: false),
       body: body,
     );
   }
@@ -56,7 +57,7 @@ class ApiService {
     
     return await http.get(
       url,
-      headers: _getHeaders(),
+      headers: await _getHeaders(),
     );
   }
 
@@ -66,7 +67,7 @@ class ApiService {
     
     return await http.get(
       url,
-      headers: _getHeaders(),
+      headers: await _getHeaders(),
     );
   }
 
@@ -75,7 +76,7 @@ class ApiService {
     
     return await http.get(
       url,
-      headers: _getHeaders(),
+      headers: await _getHeaders(),
     );
   }
 
@@ -85,7 +86,7 @@ class ApiService {
     
     return await http.post(
       url,
-      headers: _getHeaders(),
+      headers: await _getHeaders(),
       body: body,
     );
   }
@@ -96,7 +97,7 @@ class ApiService {
     
     return await http.put(
       url,
-      headers: _getHeaders(),
+      headers: await _getHeaders(),
       body: body,
     );
   }
@@ -106,7 +107,7 @@ class ApiService {
     
     return await http.delete(
       url,
-      headers: _getHeaders(),
+      headers: await _getHeaders(),
     );
   }
 
@@ -116,7 +117,7 @@ class ApiService {
     
     return await http.get(
       url,
-      headers: _getHeaders(),
+      headers: await _getHeaders(),
     );
   }
 
@@ -132,7 +133,7 @@ class ApiService {
     
     return await http.post(
       url,
-      headers: _getHeaders(),
+      headers: await _getHeaders(),
       body: body,
     );
   }
@@ -143,7 +144,7 @@ class ApiService {
     
     return await http.get(
       url,
-      headers: _getHeaders(),
+      headers: await _getHeaders(),
     );
   }
 
@@ -153,7 +154,7 @@ class ApiService {
     
     return await http.get(
       url,
-      headers: _getHeaders(),
+      headers: await _getHeaders(),
     );
   }
 
@@ -163,7 +164,7 @@ class ApiService {
     
     return await http.get(
       url,
-      headers: _getHeaders(),
+      headers: await _getHeaders(),
     );
   }
 
@@ -173,7 +174,7 @@ class ApiService {
     
     return await http.post(
       url,
-      headers: _getHeaders(),
+      headers: await _getHeaders(),
       body: body,
     );
   }
@@ -184,7 +185,7 @@ class ApiService {
     
     return await http.get(
       url,
-      headers: _getHeaders(),
+      headers: await _getHeaders(),
     );
   }
 
@@ -194,7 +195,7 @@ class ApiService {
     
     return await http.post(
       url,
-      headers: _getHeaders(),
+      headers: await _getHeaders(),
       body: body,
     );
   }
@@ -205,7 +206,7 @@ class ApiService {
     
     return await http.get(
       url,
-      headers: _getHeaders(),
+      headers: await _getHeaders(),
     );
   }
 
@@ -215,7 +216,7 @@ class ApiService {
     
     return await http.post(
       url,
-      headers: _getHeaders(),
+      headers: await _getHeaders(),
       body: body,
     );
   }
@@ -226,7 +227,7 @@ class ApiService {
     
     return await http.get(
       url,
-      headers: _getHeaders(),
+      headers: await _getHeaders(),
     );
   }
 
@@ -236,7 +237,7 @@ class ApiService {
     
     return await http.post(
       url,
-      headers: _getHeaders(),
+      headers: await _getHeaders(),
       body: body,
     );
   }
@@ -247,7 +248,7 @@ class ApiService {
     
     return await http.get(
       url,
-      headers: _getHeaders(),
+      headers: await _getHeaders(),
     );
   }
 
@@ -257,7 +258,7 @@ class ApiService {
     
     return await http.get(
       url,
-      headers: _getHeaders(),
+      headers: await _getHeaders(),
     );
   }
 
@@ -267,7 +268,7 @@ class ApiService {
     
     return await http.get(
       url,
-      headers: _getHeaders(),
+      headers: await _getHeaders(),
     );
   }
 
@@ -277,7 +278,7 @@ class ApiService {
     
     return await http.get(
       url,
-      headers: _getHeaders(),
+      headers: await _getHeaders(),
     );
   }
 
@@ -287,7 +288,7 @@ class ApiService {
     
     return await http.post(
       url,
-      headers: _getHeaders(),
+      headers: await _getHeaders(),
       body: body,
     );
   }
@@ -298,7 +299,7 @@ class ApiService {
     
     return await http.get(
       url,
-      headers: _getHeaders(),
+      headers: await _getHeaders(),
     );
   }
 
@@ -307,7 +308,7 @@ class ApiService {
     
     return await http.post(
       url,
-      headers: _getHeaders(),
+      headers: await _getHeaders(),
     );
   }
 
@@ -316,7 +317,7 @@ class ApiService {
     
     return await http.post(
       url,
-      headers: _getHeaders(),
+      headers: await _getHeaders(),
     );
   }
 
@@ -326,7 +327,7 @@ class ApiService {
     
     return await http.get(
       url,
-      headers: _getHeaders(),
+      headers: await _getHeaders(),
     );
   }
 
@@ -336,7 +337,7 @@ class ApiService {
     
     return await http.post(
       url,
-      headers: _getHeaders(),
+      headers: await _getHeaders(),
       body: body,
     );
   }
@@ -347,7 +348,7 @@ class ApiService {
     
     return await http.get(
       url,
-      headers: _getHeaders(),
+      headers: await _getHeaders(),
     );
   }
 
@@ -357,7 +358,7 @@ class ApiService {
     
     return await http.post(
       url,
-      headers: _getHeaders(),
+      headers: await _getHeaders(),
       body: body,
     );
   }
@@ -368,7 +369,7 @@ class ApiService {
     
     return await http.get(
       url,
-      headers: _getHeaders(),
+      headers: await _getHeaders(),
     );
   }
 
@@ -378,7 +379,7 @@ class ApiService {
     
     return await http.put(
       url,
-      headers: _getHeaders(),
+      headers: await _getHeaders(),
       body: body,
     );
   }
@@ -389,7 +390,7 @@ class ApiService {
     
     return await http.get(
       url,
-      headers: _getHeaders(),
+      headers: await _getHeaders(),
     );
   }
 
@@ -399,7 +400,7 @@ class ApiService {
     
     return await http.post(
       url,
-      headers: _getHeaders(),
+      headers: await _getHeaders(),
       body: body,
     );
   }
