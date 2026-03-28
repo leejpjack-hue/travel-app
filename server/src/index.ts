@@ -2368,7 +2368,11 @@ app.post('/api/trips/:id/japan-tickets/calculate', (req, res) => {
     
     // Parse ticket details
     const ticketDetails: any = {
-      ...ticket,
+      id: (ticket as any).id,
+      name: (ticket as any).name,
+      type: (ticket as any).type,
+      price: (ticket as any).price,
+      validity_days: (ticket as any).validity_days,
       coverage_areas: JSON.parse((ticket as any).coverage_areas || '[]'),
       conditions: JSON.parse((ticket as any).conditions || '{}')
     };
@@ -3016,6 +3020,2260 @@ app.delete('/api/trips/:id/experience-bookings/:bookingId', (req, res) => {
     res.status(500).json({ error: error.message || 'Internal server error' });
   }
 });
+
+// Module 5: In-Trip Execution APIs (F40-F46)
+
+// F40: 一鍵跳轉地圖導航 - Get map navigation data
+app.get('/api/trips/:id/navigation', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    // Get timeline items and destinations for navigation
+    const timelineItems = db.prepare(`
+      SELECT ti.*, 
+             d.name as dest_name,
+             d.latitude,
+             d.longitude,
+             d.address
+      FROM timeline_items ti
+      LEFT JOIN destinations d ON ti.destination_id = d.id
+      WHERE ti.trip_id = ?
+      ORDER BY ti.order_index
+    `).all(req.params.id);
+
+    const customPins = db.prepare('SELECT * FROM custom_pins WHERE trip_id = ?').all(req.params.id);
+    const destinations = db.prepare('SELECT * FROM destinations WHERE trip_id = ?').all(req.params.id);
+
+    // Generate navigation waypoints
+    const waypoints = [];
+    
+    // Add current location (mock)
+    waypoints.push({
+      id: 'current',
+      name: '當前位置',
+      latitude: 35.6762,
+      longitude: 139.6503,
+      type: 'current_location',
+      is_current: true
+    });
+
+    // Add timeline items as waypoints
+    timelineItems.forEach((item: any) => {
+      if (item.latitude && item.longitude) {
+        waypoints.push({
+          id: item.id,
+          name: item.name || item.dest_name,
+          latitude: item.latitude,
+          longitude: item.longitude,
+          type: 'timeline_item',
+          address: item.address,
+          visit_time: item.start_time,
+          duration: item.duration_minutes
+        });
+      }
+    });
+
+    // Add custom pins
+    customPins.forEach((pin: any) => {
+      waypoints.push({
+        id: pin.id,
+        name: pin.name,
+        latitude: pin.latitude,
+        longitude: pin.longitude,
+        type: 'custom_pin',
+        address: pin.address,
+        icon: pin.icon,
+        color: pin.color
+      });
+    });
+
+    // Add destinations
+    destinations.forEach((dest: any) => {
+      if (dest.latitude && dest.longitude) {
+        waypoints.push({
+          id: dest.id,
+          name: dest.name,
+          latitude: dest.latitude,
+          longitude: dest.longitude,
+          type: 'destination',
+          address: dest.address,
+          visit_date: dest.visit_date
+        });
+      }
+    });
+
+    // Calculate routes between waypoints
+    const routes = [];
+    for (let i = 0; i < waypoints.length - 1; i++) {
+      const from = waypoints[i];
+      const to = waypoints[i + 1];
+      
+      const distance = calculateDistance(from.latitude, from.longitude, to.latitude, to.longitude);
+      const duration = Math.round(distance / 80); // Walking speed ~80m/min
+      
+      routes.push({
+        from_waypoint: from.id,
+        to_waypoint: to.id,
+        distance_meters: Math.round(distance),
+        duration_minutes: duration,
+        transport_mode: selectOptimalTransportMode(distance, duration),
+        instructions: generateNavigationInstructions(from, to, distance, duration)
+      });
+    }
+
+    res.json({
+      navigation: {
+        waypoints: waypoints,
+        routes: routes,
+        total_distance: routes.reduce((sum, route) => sum + route.distance_meters, 0),
+        total_duration: routes.reduce((sum, route) => sum + route.duration_minutes, 0),
+        map_type: 'google_maps',
+        zoom_level: 14,
+        center_lat: waypoints[0]?.latitude || 35.6762,
+        center_lng: waypoints[0]?.longitude || 139.6503
+      },
+      metadata: {
+        generated_at: new Date().toISOString(),
+        waypoints_count: waypoints.length,
+        routes_count: routes.length,
+        optimize_for: 'time'
+      }
+    });
+  } catch (error: any) {
+    console.error('Navigation API error:', error);
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// F41: 全行程離線模式 - Download offline data
+app.get('/api/trips/:id/offline-download', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    // Generate offline package data
+    const offlinePackage = {
+      trip_id: req.params.id,
+      trip_name: (trip as any).name,
+      destination: (trip as any).destination,
+      start_date: (trip as any).start_date,
+      end_date: (trip as any).end_date,
+      generated_at: new Date().toISOString(),
+      file_size_mb: 2.5,
+      estimated_download_time: '30秒',
+      includes: [
+        '基本行程資料',
+        '地圖地標點',
+        '交通路線',
+        '景點詳細資訊',
+        '離線天氣資料',
+        '緊急聯絡資訊'
+      ],
+      offline_features: {
+        map_navigation: true,
+        timeline_view: true,
+        poi_search: true,
+        emergency_contacts: true,
+        weather_forecast: true,
+        currency_conversion: true
+      }
+    };
+
+    // Create download record
+    const downloadId = generateUUID();
+    const now = new Date().toISOString();
+    
+    db.prepare(`
+      INSERT INTO offline_downloads (id, trip_id, user_id, package_size_mb, download_status, created_at)
+      VALUES (?, ?, ?, ?, 'generating', ?)
+    `).run(
+      downloadId,
+      req.params.id,
+      user.id,
+      offlinePackage.file_size_mb,
+      now
+    );
+
+    // Simulate package generation
+    setTimeout(() => {
+      db.prepare(`
+        UPDATE offline_downloads SET download_status = 'ready', package_url = ?, updated_at = ?
+        WHERE id = ?
+      `).run(
+        `/api/trips/${req.params.id}/offline-package.zip`,
+        new Date().toISOString(),
+        downloadId
+      );
+    }, 2000);
+
+    res.status(202).json({
+      message: 'Offline package generation started',
+      download: {
+        id: downloadId,
+        package: offlinePackage,
+        status: 'generating',
+        estimated_completion: new Date(Date.now() + 2000).toISOString()
+      }
+    });
+  } catch (error: any) {
+    console.error('Offline download API error:', error);
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// GET /api/trips/:id/offline-status - Check offline download status
+app.get('/api/trips/:id/offline-status', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    const download = db.prepare(`
+      SELECT * FROM offline_downloads 
+      WHERE trip_id = ? AND user_id = ? 
+      ORDER BY created_at DESC 
+      LIMIT 1
+    `).get(req.params.id, user.id);
+
+    if (!download) {
+      return res.json({
+        offline_status: 'not_started',
+        message: 'No offline download initiated',
+        available_offline: false
+      });
+    }
+
+    res.json({
+      offline_status: (download as any).download_status,
+      download: download,
+      available_offline: (download as any).download_status === 'ready',
+      package_url: (download as any).download_status === 'ready' ? `/api/trips/${req.params.id}/offline-package.zip` : null
+    });
+  } catch (error: any) {
+    console.error('Offline status API error:', error);
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// F42: 實時 GPS 行程追蹤 - Start/stop GPS tracking
+app.post('/api/trips/:id/gps-tracking/start', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    // Check if tracking is already active
+    const activeTracking = db.prepare('SELECT * FROM gps_tracking WHERE trip_id = ? AND is_active = TRUE').get(req.params.id);
+    if (activeTracking) {
+      return res.status(409).json({ 
+        error: 'GPS tracking is already active',
+        tracking_session: activeTracking 
+      });
+    }
+
+    const trackingId = generateUUID();
+    const now = new Date().toISOString();
+    
+    db.prepare(`
+      INSERT INTO gps_tracking (id, trip_id, user_id, start_time, is_active, created_at)
+      VALUES (?, ?, ?, ?, TRUE, ?)
+    `).run(trackingId, req.params.id, user.id, now, now);
+
+    // Get first timeline item as starting point
+    const firstItem = db.prepare(`
+      SELECT ti.*, d.latitude, d.longitude, d.name as dest_name
+      FROM timeline_items ti
+      LEFT JOIN destinations d ON ti.destination_id = d.id
+      WHERE ti.trip_id = ?
+      ORDER BY ti.order_index ASC
+      LIMIT 1
+    `).get(req.params.id);
+
+    res.status(201).json({
+      message: 'GPS tracking started successfully',
+      tracking_session: {
+        id: trackingId,
+        trip_id: req.params.id,
+        start_time: now,
+        is_active: true,
+        current_location: {
+          latitude: 35.6762,
+          longitude: 139.6503,
+          accuracy: 5,
+          timestamp: now
+        },
+        next_destination: firstItem,
+        tracking_status: 'active'
+      }
+    });
+  } catch (error: any) {
+    console.error('GPS tracking start error:', error);
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// POST /api/trips/:id/gps-tracking/stop - Stop GPS tracking
+app.post('/api/trips/:id/gps-tracking/stop', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    const activeTracking = db.prepare('SELECT * FROM gps_tracking WHERE trip_id = ? AND is_active = TRUE').get(req.params.id);
+    if (!activeTracking) {
+      return res.status(400).json({ error: 'No active GPS tracking session found' });
+    }
+
+    const activeTrackingId = (activeTracking as any).id;
+    const activeTrackingStartTime = (activeTracking as any).start_time;
+    const stopTime = new Date().toISOString();
+    
+    // Mark tracking as completed
+    db.prepare(`
+      UPDATE gps_tracking SET 
+        end_time = ?, 
+        is_active = FALSE, 
+        total_distance_meters = ?,
+        completed_at = ?
+      WHERE id = ?
+    `).run(
+      stopTime,
+      Math.floor(Math.random() * 5000) + 1000, // Mock total distance
+      stopTime,
+      activeTrackingId
+    );
+
+    // Get tracking summary
+    const locations = db.prepare(`
+      SELECT * FROM gps_locations 
+      WHERE tracking_id = ? 
+      ORDER BY timestamp ASC
+    `).all(activeTrackingId);
+
+    const trackingSummary = {
+      id: activeTrackingId,
+      trip_id: req.params.id,
+      start_time: activeTrackingStartTime,
+      end_time: stopTime,
+      duration_minutes: Math.floor((new Date(stopTime).getTime() - new Date(activeTrackingStartTime).getTime()) / (1000 * 60)),
+      locations_count: locations.length,
+      total_distance_meters: Math.floor(Math.random() * 5000) + 1000,
+      avg_speed_kmh: Math.floor(Math.random() * 5) + 3,
+      path: locations.slice(0, 10) // Return first 10 locations for demo
+    };
+
+    res.json({
+      message: 'GPS tracking stopped successfully',
+      tracking_summary: trackingSummary
+    });
+  } catch (error: any) {
+    console.error('GPS tracking stop error:', error);
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// POST /api/trips/:id/gps-tracking/location - Update GPS location
+app.post('/api/trips/:id/gps-tracking/location', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    const { latitude, longitude, accuracy, timestamp, battery_level } = req.body;
+
+    if (!latitude || !longitude) {
+      return res.status(400).json({ error: 'Latitude and longitude are required' });
+    }
+
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    const activeTracking = db.prepare('SELECT * FROM gps_tracking WHERE trip_id = ? AND is_active = TRUE').get(req.params.id);
+    if (!activeTracking) {
+      return res.status(400).json({ error: 'No active GPS tracking session found' });
+    }
+
+    const activeTrackingId = (activeTracking as any).id;
+    
+    // Store location
+    const locationId = generateUUID();
+    const now = new Date().toISOString();
+    
+    db.prepare(`
+      INSERT INTO gps_locations (id, tracking_id, latitude, longitude, accuracy, timestamp, battery_level, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      locationId,
+      activeTrackingId,
+      latitude,
+      longitude,
+      accuracy || 10,
+      timestamp || now,
+      battery_level,
+      now
+    );
+
+    // Check if user is near next destination
+    const nextItem = db.prepare(`
+      SELECT ti.*, d.latitude, d.longitude, d.name as dest_name
+      FROM timeline_items ti
+      LEFT JOIN destinations d ON ti.destination_id = d.id
+      WHERE ti.trip_id = ?
+      ORDER BY ti.order_index ASC
+      LIMIT 1
+    `).get(req.params.id);
+
+    let proximityAlert = null;
+    if (nextItem && (nextItem as any).latitude && (nextItem as any).longitude) {
+      const distance = calculateDistance(latitude, longitude, (nextItem as any).latitude, (nextItem as any).longitude);
+      if (distance < 200) { // Within 200 meters
+        proximityAlert = {
+          destination_id: (nextItem as any).destination_id,
+          destination_name: (nextItem as any).dest_name,
+          distance_meters: Math.round(distance),
+          estimated_arrival: new Date(Date.now() + 5 * 60000).toISOString(), // 5 minutes
+          message: `即將抵達${(nextItem as any).dest_name}`
+        };
+      }
+    }
+
+    res.json({
+      message: 'GPS location updated successfully',
+      location_id: locationId,
+      proximity_alert: proximityAlert,
+      tracking_status: 'active'
+    });
+  } catch (error: any) {
+    console.error('GPS location update error:', error);
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// F43: 數位票券與 PDF 夾 - Digital tickets management
+app.get('/api/trips/:id/digital-tickets', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    const tickets = db.prepare(`
+      SELECT dt.*, u.name as user_name
+      FROM digital_tickets dt
+      LEFT JOIN users u ON dt.user_id = u.id
+      WHERE dt.trip_id = ?
+      ORDER BY dt.ticket_type, dt.valid_from DESC
+    `).all(req.params.id);
+
+    // Format tickets with PDF attachments info
+    const formattedTickets = tickets.map((ticket: any) => ({
+      ...ticket,
+      attachments: ticket.attachments ? JSON.parse(ticket.attachments) : [],
+      is_valid: isTicketValid(ticket),
+      days_until_expiry: calculateDaysUntilExpiry(ticket.valid_until)
+    }));
+
+    res.json({
+      digital_tickets: formattedTickets,
+      total_tickets: formattedTickets.length,
+      statistics: {
+        valid_tickets: formattedTickets.filter(t => t.is_valid).length,
+        expired_tickets: formattedTickets.filter(t => !t.is_valid).length,
+        upcoming_expirations: formattedTickets.filter(t => t.days_until_expiry <= 7 && t.days_until_expiry > 0).length
+      }
+    });
+  } catch (error: any) {
+    console.error('Digital tickets API error:', error);
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// POST /api/trips/:id/digital-tickets - Add digital ticket
+app.post('/api/trips/:id/digital-tickets', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    const { 
+      ticket_type, 
+      ticket_name, 
+      provider_name, 
+      valid_from, 
+      valid_until, 
+      ticket_number,
+      qr_code_data,
+      pdf_attachments,
+      notes 
+    } = req.body;
+
+    if (!ticket_type || !ticket_name || !valid_from || !valid_until) {
+      return res.status(400).json({ 
+        error: 'Ticket type, name, valid_from, and valid_until are required' 
+      });
+    }
+
+    const ticketId = generateUUID();
+    const now = new Date().toISOString();
+
+    db.prepare(`
+      INSERT INTO digital_tickets (
+        id, trip_id, user_id, ticket_type, ticket_name, provider_name,
+        valid_from, valid_until, ticket_number, qr_code_data,
+        pdf_attachments, notes, created_at, updated_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      ticketId,
+      req.params.id,
+      user.id,
+      ticket_type,
+      ticket_name,
+      provider_name,
+      valid_from,
+      valid_until,
+      ticket_number,
+      qr_code_data,
+      pdf_attachments ? JSON.stringify(pdf_attachments) : null,
+      notes,
+      now,
+      now
+    );
+
+    const ticket = db.prepare('SELECT * FROM digital_tickets WHERE id = ?').get(ticketId) as any;
+    res.status(201).json({
+      message: 'Digital ticket added successfully',
+      digital_ticket: {
+        ...ticket,
+        is_valid: isTicketValid(ticket),
+        days_until_expiry: calculateDaysUntilExpiry(ticket.valid_until)
+      }
+    });
+  } catch (error: any) {
+    console.error('Add digital ticket error:', error);
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// F44: 鬧鐘推播提醒 - Alarm and notification management
+app.get('/api/trips/:id/alarms', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    const alarms = db.prepare(`
+      SELECT a.*, ti.name as timeline_item_name, ti.start_time, ti.end_time
+      FROM trip_alarms a
+      LEFT JOIN timeline_items ti ON a.timeline_item_id = ti.id
+      WHERE a.trip_id = ?
+      ORDER BY a.scheduled_time ASC
+    `).all(req.params.id);
+
+    const now = new Date().toISOString();
+    const activeAlarms = alarms.filter((alarm: any) => new Date((alarm as any).scheduled_time) > new Date(now));
+    const pastAlarms = alarms.filter((alarm: any) => new Date((alarm as any).scheduled_time) <= new Date(now));
+
+    res.json({
+      alarms: alarms,
+      active_alarms: activeAlarms,
+      past_alarms: pastAlarms,
+      statistics: {
+        total_alarms: alarms.length,
+        active_count: activeAlarms.length,
+        past_count: pastAlarms.length,
+        upcoming_hours: activeAlarms.length > 0 ? 
+          Math.ceil((new Date((activeAlarms[0] as any).scheduled_time).getTime() - Date.now()) / (1000 * 3600)) : 0
+      }
+    });
+  } catch (error: any) {
+    console.error('Alarms API error:', error);
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// POST /api/trips/:id/alarms - Create alarm
+app.post('/api/trips/:id/alarms', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    const { 
+      timeline_item_id, 
+      alarm_type, 
+      scheduled_time, 
+      reminder_message,
+      is_repeating,
+      repeat_interval 
+    } = req.body;
+
+    if (!alarm_type || !scheduled_time || !reminder_message) {
+      return res.status(400).json({ 
+        error: 'Alarm type, scheduled time, and reminder message are required' 
+      });
+    }
+
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    const alarmId = generateUUID();
+    const now = new Date().toISOString();
+
+    db.prepare(`
+      INSERT INTO trip_alarms (
+        id, trip_id, user_id, timeline_item_id, alarm_type, 
+        scheduled_time, reminder_message, is_repeating, repeat_interval, created_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      alarmId,
+      req.params.id,
+      user.id,
+      timeline_item_id,
+      alarm_type,
+      scheduled_time,
+      reminder_message,
+      is_repeating || false,
+      repeat_interval,
+      now
+    );
+
+    const alarm = db.prepare(`
+      SELECT a.*, ti.name as timeline_item_name, ti.start_time, ti.end_time
+      FROM trip_alarms a
+      LEFT JOIN timeline_items ti ON a.timeline_item_id = ti.id
+      WHERE a.id = ?
+    `).get(alarmId) as any;
+
+    res.status(201).json({
+      message: 'Alarm created successfully',
+      alarm: alarm
+    });
+  } catch (error: any) {
+    console.error('Create alarm error:', error);
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// DELETE /api/trips/:id/alarms/:alarmId - Delete alarm
+app.delete('/api/trips/:id/alarms/:alarmId', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    const alarm = db.prepare('SELECT * FROM trip_alarms WHERE id = ? AND trip_id = ?').get(req.params.alarmId, req.params.id);
+    if (!alarm) {
+      return res.status(404).json({ error: 'Alarm not found' });
+    }
+
+    db.prepare('DELETE FROM trip_alarms WHERE id = ?').run(req.params.alarmId);
+
+    res.json({ 
+      message: 'Alarm deleted successfully',
+      deleted_alarm: alarm 
+    });
+  } catch (error: any) {
+    console.error('Delete alarm error:', error);
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// F45: 緊急求助資訊卡 - Emergency help information
+app.get('/api/trips/:id/emergency-info', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    // Get emergency contacts
+    const emergencyContacts = db.prepare(`
+      SELECT * FROM emergency_contacts 
+      WHERE user_id = ? 
+      ORDER BY priority ASC
+    `).all(user.id);
+
+    // Get emergency services for the destination
+    const emergencyServices = db.prepare(`
+      SELECT * FROM emergency_services 
+      WHERE destination = ? OR is_global = TRUE
+      ORDER BY priority ASC
+    `).all((trip as any).destination || 'tokyo');
+
+    // Get medical information
+    const medicalInfo = db.prepare('SELECT * FROM medical_info WHERE user_id = ?').get(user.id);
+
+    // Generate emergency kit checklist
+    const emergencyChecklist = [
+      { item: '緊急聯絡人清單', completed: true, priority: 1 },
+      { item: '護照/身份證件', completed: true, priority: 1 },
+      { item: '保險證明文件', completed: true, priority: 1 },
+      { item: '醫療資訊', completed: medicalInfo ? true : false, priority: 2 },
+      { item: '當地緊急電話', completed: true, priority: 1 },
+      { item: '醫療用品', completed: false, priority: 2 },
+      { item: '現金/信用卡', completed: true, priority: 1 },
+      { item: '翻譯應用程式', completed: true, priority: 2 }
+    ];
+
+    res.json({
+      emergency_info: {
+        trip_id: req.params.id,
+        destination: (trip as any).destination,
+        created_at: new Date().toISOString(),
+        contacts: emergencyContacts,
+        services: emergencyServices,
+        medical_info: medicalInfo,
+        checklist: emergencyChecklist,
+        safety_tips: generateSafetyTips((trip as any).destination)
+      }
+    });
+  } catch (error: any) {
+    console.error('Emergency info API error:', error);
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// POST /api/trips/:id/emergency-contacts - Add emergency contact
+app.post('/api/trips/:id/emergency-contacts', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    const { name, relationship, phone, email, country_code, priority = 1 } = req.body;
+
+    if (!name || !relationship || !phone) {
+      return res.status(400).json({ 
+        error: 'Name, relationship, and phone are required' 
+      });
+    }
+
+    const contactId = generateUUID();
+    const now = new Date().toISOString();
+
+    db.prepare(`
+      INSERT INTO emergency_contacts (
+        id, user_id, name, relationship, phone, email, country_code, priority, created_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      contactId,
+      user.id,
+      name,
+      relationship,
+      phone,
+      email || null,
+      country_code || '+886',
+      priority,
+      now
+    );
+
+    const contact = db.prepare('SELECT * FROM emergency_contacts WHERE id = ?').get(contactId);
+    res.status(201).json({
+      message: 'Emergency contact added successfully',
+      emergency_contact: contact
+    });
+  } catch (error: any) {
+    console.error('Add emergency contact error:', error);
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// F46: 多幣別記帳本與匯率換算 - Multi-currency expense tracker
+app.get('/api/trips/:id/expenses', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    const expenses = db.prepare(`
+      SELECT e.*, c.name as category_name, c.icon as category_icon
+      FROM trip_expenses e
+      LEFT JOIN expense_categories c ON e.category_id = c.id
+      WHERE e.trip_id = ?
+      ORDER BY e.expense_date DESC, e.created_at DESC
+    `).all(req.params.id);
+
+    // Calculate totals by currency
+    const currencyTotals = {};
+    expenses.forEach((expense: any) => {
+      const currency = expense.currency || 'TWD';
+      if (!currencyTotals[currency]) {
+        currencyTotals[currency] = { amount: 0, count: 0 };
+      }
+      currencyTotals[currency].amount += expense.amount;
+      currencyTotals[currency].count += 1;
+    });
+
+    // Get exchange rates (mock data)
+    const exchangeRates = {
+      TWD: { USD: 0.031, EUR: 0.029, JPY: 4.8, KRW: 42.5 },
+      USD: { TWD: 32.5, EUR: 0.93, JPY: 155, KRW: 1375 },
+      EUR: { TWD: 35.2, USD: 1.08, JPY: 167, KRW: 1485 },
+      JPY: { TWD: 0.21, USD: 0.0065, EUR: 0.006, KRW: 8.9 },
+      KRW: { TWD: 0.024, USD: 0.00073, EUR: 0.00067, JPY: 0.11 }
+    };
+
+    // Convert all totals to base currency (TWD)
+    const baseCurrency = 'TWD';
+    const totalsInBase = {};
+    Object.keys(currencyTotals).forEach(currency => {
+      if (currency === baseCurrency) {
+        totalsInBase[currency] = currencyTotals[currency];
+      } else if (exchangeRates[currency] && exchangeRates[currency][baseCurrency]) {
+        totalsInBase[currency] = {
+          amount: currencyTotals[currency].amount * exchangeRates[currency][baseCurrency],
+          count: currencyTotals[currency].count
+        };
+      }
+    });
+
+    res.json({
+      expenses: expenses,
+      currency_totals: currencyTotals,
+      totals_in_base_currency: totalsInBase,
+      total_amount: Object.values(totalsInBase).reduce((sum, total: any) => sum + total.amount, 0),
+      exchange_rates: exchangeRates,
+      categories: getExpenseCategories()
+    });
+  } catch (error: any) {
+    console.error('Expenses API error:', error);
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// POST /api/trips/:id/expenses - Add expense
+app.post('/api/trips/:id/expenses', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    const { 
+      amount, 
+      currency = 'TWD', 
+      category_id, 
+      description, 
+      expense_date,
+      location,
+      payment_method,
+      receipt_url 
+    } = req.body;
+
+    if (!amount || !currency || !expense_date || !description) {
+      return res.status(400).json({ 
+        error: 'Amount, currency, expense date, and description are required' 
+      });
+    }
+
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    const expenseId = generateUUID();
+    const now = new Date().toISOString();
+
+    db.prepare(`
+      INSERT INTO trip_expenses (
+        id, trip_id, user_id, amount, currency, category_id, 
+        description, expense_date, location, payment_method, 
+        receipt_url, created_at, updated_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      expenseId,
+      req.params.id,
+      user.id,
+      amount,
+      currency,
+      category_id,
+      description,
+      expense_date,
+      location,
+      payment_method,
+      receipt_url,
+      now,
+      now
+    );
+
+    const expense = db.prepare(`
+      SELECT e.*, c.name as category_name, c.icon as category_icon
+      FROM trip_expenses e
+      LEFT JOIN expense_categories c ON e.category_id = c.id
+      WHERE e.id = ?
+    `).get(expenseId) as any;
+
+    res.status(201).json({
+      message: 'Expense added successfully',
+      expense: expense
+    });
+  } catch (error: any) {
+    console.error('Add expense error:', error);
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// Helper functions for Module 5
+
+function calculateDistance(lat1: number, lon1: number, lat2: number, lon2: number): number {
+  const R = 6371; // Earth's radius in km
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLon = (lon2 - lon1) * Math.PI / 180;
+  const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+    Math.sin(dLon/2) * Math.sin(dLon/2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+  return R * c * 1000; // Return distance in meters
+}
+
+function selectOptimalTransportMode(distance: number, duration: number): string {
+  if (distance < 500) return 'walking';
+  if (distance < 5000) return 'public';
+  if (distance < 20000) return 'taxi';
+  return 'driving';
+}
+
+function generateNavigationInstructions(from: any, to: any, distance: number, duration: number): any[] {
+  const instructions = [];
+  
+  instructions.push({
+    step: 1,
+    instruction: `從${from.name}出發`,
+    distance: 0,
+    duration: 0
+  });
+
+  const transportMode = selectOptimalTransportMode(distance, duration);
+  const distanceKm = (distance / 1000).toFixed(1);
+  
+  if (transportMode === 'walking') {
+    instructions.push({
+      step: 2,
+      instruction: `步行前往${to.name}`,
+      distance: `${distanceKm}公里`,
+      duration: `${Math.round(duration)}分鐘`
+    });
+  } else if (transportMode === 'public') {
+    instructions.push({
+      step: 2,
+      instruction: `搭乘大眾運輸前往${to.name}`,
+      distance: `${distanceKm}公里`,
+      duration: `${Math.round(duration * 1.2)}分鐘`
+    });
+  } else {
+    instructions.push({
+      step: 2,
+      instruction: `搭乘${transportMode}前往${to.name}`,
+      distance: `${distanceKm}公里`,
+      duration: `${Math.round(duration * 0.8)}分鐘`
+    });
+  }
+
+  instructions.push({
+    step: 3,
+    instruction: `抵達${to.name}`,
+    distance: 0,
+    duration: 0
+  });
+
+  return instructions;
+}
+
+function isTicketValid(ticket: any): boolean {
+  const now = new Date();
+  const validFrom = new Date(ticket.valid_from);
+  const validUntil = new Date(ticket.valid_until);
+  return now >= validFrom && now <= validUntil;
+}
+
+function calculateDaysUntilExpiry(validUntil: string): number {
+  const now = new Date();
+  const expiry = new Date(validUntil);
+  const diffTime = expiry.getTime() - now.getTime();
+  return Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+}
+
+function generateSafetyTips(destination: string): string[] {
+  const tips = [
+    '隨身攜帶緊急聯絡人資訊',
+    '了解當地緊急電話號碼',
+    '重要文件影印並分散存放',
+    '記住當地使領館聯絡方式',
+    '避免獨自前往偏遠地區',
+    '注意天氣變化並準備應對措施',
+    '保持與家人朋友定時聯絡'
+  ];
+
+  if (destination === 'japan') {
+    tips.unshift('學習基本日語短句');
+    tips.push('了解日本緊急避難程序');
+  } else if (destination === 'korea') {
+    tips.push('了解韓國緊急避難程序');
+  }
+
+  return tips;
+}
+
+function getExpenseCategories(): any[] {
+  return [
+    { id: 'food', name: '餐飲', icon: '🍽️', color: '#FF6B6B' },
+    { id: 'transport', name: '交通', icon: '🚗', color: '#4ECDC4' },
+    { id: 'accommodation', name: '住宿', icon: '🏨', color: '#45B7D1' },
+    { id: 'attractions', name: '景點', icon: '🎫', color: '#96CEB4' },
+    { id: 'shopping', name: '購物', icon: '🛍️', color: '#FFEAA7' },
+    { id: 'medical', name: '醫療', icon: '💊', color: '#DDA0DD' },
+    { id: 'other', name: '其他', icon: '📦', color: '#D3D3D3' }
+  ];
+}
+
+// F47: Shared Fund Splitting System APIs
+
+// GET /api/trips/:id/splits - List all splits for a trip
+app.get('/api/trips/:id/splits', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+    
+    const splits = db.prepare('SELECT * FROM trip_splits WHERE trip_id = ? ORDER BY created_at DESC').all(req.params.id);
+    
+    // Get split items and participants for each split
+    const splitsWithDetails = splits.map((split: any) => {
+      const items = db.prepare('SELECT * FROM trip_split_items WHERE split_id = ? ORDER BY created_at ASC').all(split.id);
+      const participants = db.prepare('SELECT * FROM trip_split_participants WHERE split_id = ? ORDER BY created_at ASC').all(split.id);
+      
+      // Calculate totals
+      const totalAmount = items.reduce((sum: number, item: any) => sum + item.amount, 0);
+      const totalOwed = participants.reduce((sum: number, participant: any) => sum + participant.amount_owed, 0);
+      const totalPaid = participants.reduce((sum: number, participant: any) => sum + participant.amount_paid, 0);
+      
+      return {
+        ...(split as any),
+        items,
+        participants,
+        total_amount: totalAmount,
+        total_owed: totalOwed,
+        total_paid: totalPaid,
+        is_settled: (totalOwed as number) === (totalPaid as number) && (totalOwed as number) > 0
+      };
+    });
+    
+    res.json({ splits: splitsWithDetails });
+  } catch (error: any) {
+    console.error('Get splits error:', error);
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// POST /api/trips/:id/splits - Create a new split
+app.post('/api/trips/:id/splits', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+    
+    const { name, description, participants } = req.body;
+    
+    if (!name || !participants || !Array.isArray(participants)) {
+      return res.status(400).json({ error: 'Split name and participants are required' });
+    }
+    
+    const splitId = generateUUID();
+    const now = new Date().toISOString();
+    
+    // Create the split
+    db.prepare(`
+      INSERT INTO trip_splits (id, trip_id, name, description, created_by, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(splitId, req.params.id, name, description || null, user.id, now, now);
+    
+    // Add participants
+    participants.forEach((participant: any) => {
+      const participantId = generateUUID();
+      const amountPerPerson = 0; // Will be calculated when items are added
+      
+      db.prepare(`
+        INSERT INTO trip_split_participants (id, split_id, user_id, amount_owed, amount_paid, settled, created_at)
+        VALUES (?, ?, ?, ?, ?, FALSE, ?)
+      `).run(participantId, splitId, participant.id, amountPerPerson, 0, now);
+    });
+    
+    const split = db.prepare('SELECT * FROM trip_splits WHERE id = ?').get(splitId);
+    res.status(201).json({ split });
+  } catch (error: any) {
+    console.error('Create split error:', error);
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// GET /api/trips/:id/splits/:splitId - Get a specific split
+app.get('/api/trips/:id/splits/:splitId', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+    
+    const split = db.prepare('SELECT * FROM trip_splits WHERE id = ? AND trip_id = ?').get(req.params.splitId, req.params.id);
+    if (!split) {
+      return res.status(404).json({ error: 'Split not found' });
+    }
+    
+    // Get items and participants
+    const items = db.prepare('SELECT * FROM trip_split_items WHERE split_id = ? ORDER BY created_at ASC').all((split as any).id);
+    const participants = db.prepare('SELECT * FROM trip_split_participants WHERE split_id = ? ORDER BY created_at ASC').all((split as any).id);
+    
+    // Calculate totals
+    const totalAmount = items.reduce((sum: number, item: any) => sum + item.amount, 0);
+    const totalOwed = participants.reduce((sum: number, participant: any) => sum + participant.amount_owed, 0);
+    const totalPaid = participants.reduce((sum: number, participant: any) => sum + participant.amount_paid, 0);
+    
+    const splitWithDetails = {
+      ...(split as any),
+      items,
+      participants,
+      total_amount: totalAmount,
+      total_owed: totalOwed,
+      total_paid: totalPaid,
+      is_settled: (totalOwed as number) === (totalPaid as number) && (totalOwed as number) > 0
+    };
+    
+    res.json({ split: splitWithDetails });
+  } catch (error: any) {
+    console.error('Get split error:', error);
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// POST /api/trips/:id/splits/:splitId/items - Add an item to a split
+app.post('/api/trips/:id/splits/:splitId/items', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+    
+    const split = db.prepare('SELECT * FROM trip_splits WHERE id = ? AND trip_id = ?').get(req.params.splitId, req.params.id);
+    if (!split) {
+      return res.status(404).json({ error: 'Split not found' });
+    }
+    
+    const { amount, description, category, paid_by, participants } = req.body;
+    
+    if (!amount || !participants || !Array.isArray(participants)) {
+      return res.status(400).json({ error: 'Amount and participants are required' });
+    }
+    
+    const itemId = generateUUID();
+    const now = new Date().toISOString();
+    
+    // Create the item
+    db.prepare(`
+      INSERT INTO trip_split_items (id, split_id, amount, description, category, paid_by, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(itemId, req.params.splitId, amount, description || null, category || null, paid_by || user.id, now);
+    
+    // Update participant balances
+    const amountPerPerson = amount / participants.length;
+    
+    participants.forEach((participantId: string) => {
+      // Add to amount owed for each participant
+      db.prepare(`
+        UPDATE trip_split_participants 
+        SET amount_owed = amount_owed + ?, updated_at = ?
+        WHERE split_id = ? AND user_id = ?
+      `).run(amountPerPerson, now, req.params.splitId, participantId);
+      
+      // Add to amount paid if this participant paid
+      if (paid_by === participantId) {
+        db.prepare(`
+          UPDATE trip_split_participants 
+          SET amount_paid = amount_paid + ?, updated_at = ?
+          WHERE split_id = ? AND user_id = ?
+        `).run(amount, now, req.params.splitId, participantId);
+      }
+    });
+    
+    const item = db.prepare('SELECT * FROM trip_split_items WHERE id = ?').get(itemId);
+    res.status(201).json({ item });
+  } catch (error: any) {
+    console.error('Add item error:', error);
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// GET /api/trips/:id/splits/:splitId/balance - Get balance information for a split
+app.get('/api/trips/:id/splits/:splitId/balance', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+    
+    const split = db.prepare('SELECT * FROM trip_splits WHERE id = ? AND trip_id = ?').get(req.params.splitId, req.params.id);
+    if (!split) {
+      return res.status(404).json({ error: 'Split not found' });
+    }
+    
+    // Get all participants and their balances
+    const participants = db.prepare('SELECT * FROM trip_split_participants WHERE split_id = ? ORDER BY created_at ASC').all((split as any).id);
+    
+    // Calculate overall totals
+    const totalAmount = participants.reduce((sum: number, participant: any) => sum + participant.amount_owed, 0);
+    const totalPaid = participants.reduce((sum: number, participant: any) => sum + participant.amount_paid, 0);
+    
+    // Calculate balance for each participant
+    const balances = participants.map((participant: any) => {
+      const balance = participant.amount_owed - participant.amount_paid;
+      return {
+        participant_id: participant.user_id,
+        participant_name: participant.user_id, // In real app, fetch user name
+        amount_owed: participant.amount_owed,
+        amount_paid: participant.amount_paid,
+        balance: balance,
+        status: balance === 0 ? 'settled' : balance > 0 ? 'owes' : 'owed'
+      };
+    });
+    
+    res.json({
+      split_id: (split as any).id,
+      split_name: (split as any).name,
+      total_amount: totalAmount,
+      total_paid: totalPaid,
+      is_settled: (totalAmount as number) === (totalPaid as number) && (totalAmount as number) > 0,
+      balances
+    });
+  } catch (error: any) {
+    console.error('Get balance error:', error);
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// F48: Beautiful Travel Handbook PDF Export
+import PDFDocument from 'pdfkit';
+
+const PRIMARY_COLOR = '#4ECDC4';
+const ACCENT_COLOR = '#FF6B6B';
+const DARK_TEXT = '#2D3436';
+const LIGHT_TEXT = '#636E72';
+const BG_ACCENT = '#DFE6E9';
+const WHITE = '#FFFFFF';
+const PAGE_W = 595.28;
+const PAGE_H = 841.89;
+const MARGIN = 50;
+
+function drawColorBar(doc: PDFKit.PDFDocument, y: number, color: string, width?: number) {
+  doc.save();
+  doc.rect(MARGIN, y, width || (PAGE_W - MARGIN * 2), 4).fill(color);
+  doc.restore();
+}
+
+function drawRoundedBox(doc: PDFKit.PDFDocument, x: number, y: number, w: number, h: number, color: string) {
+  doc.save();
+  doc.roundedRect(x, y, w, h, 8).fill(color);
+  doc.restore();
+}
+
+function addCoverPage(doc: PDFKit.PDFDocument, trip: any) {
+  drawRoundedBox(doc, 0, 0, PAGE_W, PAGE_H, '#1B9CFC');
+  doc.save();
+  doc.rect(0, PAGE_H * 0.6, PAGE_W, PAGE_H * 0.4).fill(WHITE);
+  doc.restore();
+  doc.save();
+  doc.circle(PAGE_W / 2, 280, 55).fill(WHITE);
+  doc.restore();
+  doc.fontSize(40).fillColor('#1B9CFC').text('ZV', PAGE_W / 2 - 28, 262, { width: 60, align: 'center' });
+  doc.fontSize(36).fillColor(WHITE).text('ZenVoyage', 0, 360, { align: 'center' });
+  doc.fontSize(22).fillColor('#DFE6E9').text('Travel Handbook', 0, 402, { align: 'center' });
+  doc.moveDown(6);
+  const y = doc.y;
+  doc.fontSize(28).fillColor(DARK_TEXT).text(trip.name || '', MARGIN, y + 40, { align: 'center', width: PAGE_W - MARGIN * 2 });
+  if (trip.destination) {
+    doc.fontSize(16).fillColor(LIGHT_TEXT).text(trip.destination, MARGIN, doc.y + 10, { align: 'center', width: PAGE_W - MARGIN * 2 });
+  }
+  if (trip.start_date && trip.end_date) {
+    doc.fontSize(14).fillColor(LIGHT_TEXT).text(`${trip.start_date}  ~  ${trip.end_date}`, MARGIN, doc.y + 10, { align: 'center', width: PAGE_W - MARGIN * 2 });
+  }
+  doc.fontSize(11).fillColor(LIGHT_TEXT).text(
+    `Generated: ${new Date().toLocaleDateString('zh-TW', { year: 'numeric', month: 'long', day: 'numeric' })}`,
+    MARGIN, PAGE_H - 80, { align: 'center', width: PAGE_W - MARGIN * 2 }
+  );
+}
+
+function addTOC(doc: PDFKit.PDFDocument, sections: { title: string; icon: string }[]) {
+  doc.addPage();
+  doc.fontSize(22).fillColor(DARK_TEXT).text('Table of Contents', MARGIN, 60);
+  drawColorBar(doc, 90, PRIMARY_COLOR, 120);
+  let y = 120;
+  sections.forEach((section, i) => {
+    drawRoundedBox(doc, MARGIN, y, PAGE_W - MARGIN * 2, 36, i % 2 === 0 ? '#F8F9FA' : WHITE);
+    doc.fontSize(14).fillColor(DARK_TEXT).text(`${section.icon}  ${section.title}`, MARGIN + 16, y + 10);
+    doc.fontSize(11).fillColor(LIGHT_TEXT).text(`Page ${i + 3}`, PAGE_W - MARGIN - 70, y + 12);
+    y += 42;
+  });
+}
+
+function addSectionHeader(doc: PDFKit.PDFDocument, title: string, icon: string) {
+  if (doc.y > PAGE_H - 160) doc.addPage();
+  const y = doc.y + 10;
+  drawRoundedBox(doc, MARGIN - 10, y - 5, PAGE_W - MARGIN * 2 + 20, 38, PRIMARY_COLOR);
+  doc.fontSize(16).fillColor(WHITE).text(`${icon}  ${title}`, MARGIN + 5, y + 5, { width: PAGE_W - MARGIN * 2 - 10 });
+  doc.y = y + 50;
+}
+
+function addInfoRow(doc: PDFKit.PDFDocument, label: string, value: string, icon?: string) {
+  const y = doc.y;
+  const prefix = icon ? `${icon} ` : '';
+  doc.fontSize(10).fillColor(LIGHT_TEXT).text(`${prefix}${label}`, MARGIN + 10, y, { width: 160 });
+  doc.fontSize(11).fillColor(DARK_TEXT).text(value || '--', MARGIN + 180, y, { width: PAGE_W - MARGIN * 2 - 190 });
+  doc.y = y + 22;
+}
+
+function safeStr(val: any, fallback: string = '--'): string {
+  if (val === null || val === undefined || val === '') return fallback;
+  return String(val);
+}
+
+function formatCurrency(amount: any, currency: string = 'JPY'): string {
+  const num = typeof amount === 'number' ? amount : parseFloat(amount) || 0;
+  return `${num.toLocaleString()} ${currency}`;
+}
+
+app.get('/api/trips/:id/export/pdf', async (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    const tripId = req.params.id;
+
+    const trip: any = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(tripId, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    let destinations: any[] = [];
+    let timelineItems: any[] = [];
+    let transportModes: any[] = [];
+    let bookings: any[] = [];
+    let collaborators: any[] = [];
+    let expenses: any[] = [];
+    let digitalTickets: any[] = [];
+    let customPins: any[] = [];
+    let emergencyContacts: any[] = [];
+    let transportSegments: any[] = [];
+
+    try { destinations = db.prepare('SELECT * FROM destinations WHERE trip_id = ? ORDER BY visit_date, order_index').all(tripId); } catch {}
+    try { timelineItems = db.prepare('SELECT ti.*, d.name as dest_name, d.latitude, d.longitude, d.address FROM timeline_items ti LEFT JOIN destinations d ON ti.destination_id = d.id WHERE ti.trip_id = ? ORDER BY ti.order_index').all(tripId); } catch {}
+    try { transportModes = db.prepare('SELECT * FROM transportation_modes WHERE trip_id = ?').all(tripId); } catch {}
+    try { bookings = db.prepare('SELECT * FROM bookings WHERE trip_id = ? ORDER BY date, start_time').all(tripId); } catch {}
+    try { collaborators = db.prepare('SELECT c.*, u.email, u.name FROM collaborators c JOIN users u ON c.user_id = u.id WHERE c.trip_id = ? ORDER BY c.invited_at DESC').all(tripId); } catch {}
+    try { expenses = db.prepare('SELECT e.*, c.name as category_name, c.icon as category_icon FROM trip_expenses e LEFT JOIN expense_categories c ON e.category_id = c.id WHERE e.trip_id = ? ORDER BY e.expense_date DESC').all(tripId); } catch {}
+    try { digitalTickets = db.prepare('SELECT * FROM digital_tickets WHERE trip_id = ? ORDER BY valid_from DESC').all(tripId); } catch {}
+    try { customPins = db.prepare('SELECT * FROM custom_pins WHERE trip_id = ? ORDER BY created_at DESC').all(tripId); } catch {}
+    try { emergencyContacts = db.prepare('SELECT * FROM emergency_contacts WHERE user_id = ? ORDER BY priority ASC').all(user.id); } catch {}
+    try { transportSegments = db.prepare('SELECT ts.*, dm.name as mode_name FROM transportation_segments ts LEFT JOIN transportation_modes dm ON ts.transport_mode_id = dm.id WHERE ts.trip_id = ?').all(tripId); } catch {}
+
+    const tempDir = path.join(__dirname, '../../temp');
+    if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir, { recursive: true });
+    const pdfPath = path.join(tempDir, `travel-handbook-${tripId}-${Date.now()}.pdf`);
+
+    const doc = new PDFDocument({ size: 'A4', margin: MARGIN, bufferPages: true });
+    const stream = fs.createWriteStream(pdfPath);
+    doc.pipe(stream);
+
+    addCoverPage(doc, trip);
+
+    const tocSections = [
+      { title: 'Trip Overview', icon: '\u{1F4CB}' },
+      { title: 'Daily Itinerary', icon: '\u{1F4C5}' },
+      { title: 'Destinations & Map', icon: '\u{1F4CD}' },
+      { title: 'Bookings & Tickets', icon: '\u{1F3AB}' },
+      { title: 'Transportation', icon: '\u{1F686}' },
+      { title: 'Expense Summary', icon: '\u{1F4B0}' },
+      { title: 'Travel Companions', icon: '\u{1F465}' },
+      { title: 'Emergency Info', icon: '\u{1F198}' },
+    ];
+    addTOC(doc, tocSections);
+
+    // === Section 1: Trip Overview ===
+    doc.addPage();
+    addSectionHeader(doc, 'Trip Overview', '\u{1F4CB}');
+    drawRoundedBox(doc, MARGIN, doc.y, PAGE_W - MARGIN * 2, 180, '#F8F9FA');
+    addInfoRow(doc, 'Trip Name', safeStr(trip.name));
+    addInfoRow(doc, 'Destination', safeStr(trip.destination));
+    addInfoRow(doc, 'Start Date', safeStr(trip.start_date));
+    addInfoRow(doc, 'End Date', safeStr(trip.end_date));
+    addInfoRow(doc, 'Duration', trip.start_date && trip.end_date ? `${Math.ceil((new Date(trip.end_date).getTime() - new Date(trip.start_date).getTime()) / 86400000)} days` : '--');
+    addInfoRow(doc, 'Status', safeStr(trip.status));
+    addInfoRow(doc, 'Timezone', safeStr(trip.timezone));
+    addInfoRow(doc, 'Base Location', safeStr(trip.base_location));
+
+    // === Section 2: Daily Itinerary ===
+    doc.addPage();
+    addSectionHeader(doc, 'Daily Itinerary', '\u{1F4C5}');
+
+    if (timelineItems.length === 0) {
+      doc.fontSize(12).fillColor(LIGHT_TEXT).text('No itinerary items yet.', MARGIN + 20, doc.y + 20);
+    } else {
+      let currentDate = '';
+      timelineItems.forEach((item: any, idx: number) => {
+        const itemDate = item.start_time ? new Date(item.start_time).toLocaleDateString('zh-TW') : '';
+        if (itemDate !== currentDate) {
+          if (idx > 0) doc.y += 6;
+          currentDate = itemDate;
+          if (doc.y > PAGE_H - 140) doc.addPage();
+          drawRoundedBox(doc, MARGIN + 5, doc.y, PAGE_W - MARGIN * 2 - 10, 28, '#DFE6E9');
+          doc.fontSize(12).fillColor(DARK_TEXT).text(`Day ${idx + 1}  -  ${currentDate}`, MARGIN + 16, doc.y + 7);
+          doc.y += 36;
+        }
+
+        if (doc.y > PAGE_H - 120) doc.addPage();
+        const sTime = item.start_time ? new Date(item.start_time).toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit' }) : '--:--';
+        const eTime = item.end_time ? new Date(item.end_time).toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit' }) : '--:--';
+
+        const boxY = doc.y;
+        drawRoundedBox(doc, MARGIN + 20, boxY, PAGE_W - MARGIN * 2 - 40, item.notes || item.description ? 70 : 50, WHITE);
+        doc.rect(MARGIN + 20, boxY, 5, 70).fill(PRIMARY_COLOR);
+        doc.fontSize(13).fillColor(DARK_TEXT).text(`${item.name || item.dest_name || 'Untitled'}`, MARGIN + 34, boxY + 8, { width: PAGE_W - MARGIN * 2 - 80 });
+        doc.fontSize(10).fillColor(LIGHT_TEXT).text(`${sTime} - ${eTime}${item.duration_minutes ? `  (${item.duration_minutes} min)` : ''}`, MARGIN + 34, boxY + 26, { width: PAGE_W - MARGIN * 2 - 80 });
+        if (item.address || item.dest_name) {
+          doc.fontSize(9).fillColor(LIGHT_TEXT).text(`\u{1F4CD} ${item.address || item.dest_name}`, MARGIN + 34, boxY + 42, { width: PAGE_W - MARGIN * 2 - 80 });
+        }
+        if (item.notes) {
+          doc.fontSize(9).fillColor('#B2BEC3').text(item.notes, MARGIN + 34, boxY + 55, { width: PAGE_W - MARGIN * 2 - 80 });
+        }
+        if (item.locked) {
+          doc.fontSize(9).fillColor(ACCENT_COLOR).text('\u{1F512} Locked', PAGE_W - MARGIN - 80, boxY + 8);
+        }
+        doc.y = boxY + (item.notes || item.description ? 76 : 56);
+      });
+
+      doc.y += 10;
+      const walkDist = timelineItems.reduce((sum: number, item: any) => sum + (item.walking_distance_meters || 0), 0);
+      if (walkDist > 0) {
+        drawRoundedBox(doc, MARGIN + 20, doc.y, PAGE_W - MARGIN * 2 - 40, 30, '#DFE6E9');
+        doc.fontSize(11).fillColor(DARK_TEXT).text(`Total walking distance: ${(walkDist / 1000).toFixed(1)} km`, MARGIN + 34, doc.y + 8);
+        doc.y += 38;
+      }
+    }
+
+    // === Section 3: Destinations & Map ===
+    doc.addPage();
+    addSectionHeader(doc, 'Destinations & Map', '\u{1F4CD}');
+
+    const allLocations = [
+      ...destinations.map((d: any) => ({ name: d.name, lat: d.latitude, lng: d.longitude, type: 'destination', address: d.address, notes: d.notes })),
+      ...customPins.map((p: any) => ({ name: p.name, lat: p.latitude, lng: p.longitude, type: p.type, address: p.address, notes: p.description }))
+    ].filter((loc) => loc.lat && loc.lng);
+
+    if (allLocations.length > 0) {
+      const mapBoxY = doc.y;
+      const mapBoxH = 200;
+      drawRoundedBox(doc, MARGIN, mapBoxY, PAGE_W - MARGIN * 2, mapBoxH, '#DFE6E9');
+      doc.fontSize(11).fillColor(LIGHT_TEXT).text('Map View - Coordinates Reference', MARGIN + 16, mapBoxY + 10);
+
+      const lats = allLocations.map((l) => l.lat);
+      const lngs = allLocations.map((l) => l.lng);
+      const minLat = Math.min(...lats);
+      const maxLat = Math.max(...lats);
+      const minLng = Math.min(...lngs);
+      const maxLng = Math.max(...lngs);
+      const padLat = (maxLat - minLat) * 0.1 || 0.01;
+      const padLng = (maxLng - minLng) * 0.1 || 0.01;
+
+      const innerX = MARGIN + 20;
+      const innerY = mapBoxY + 30;
+      const innerW = PAGE_W - MARGIN * 2 - 40;
+      const innerH = mapBoxH - 45;
+
+      allLocations.forEach((loc, i) => {
+        const px = innerX + ((loc.lng - minLng + padLng) / (maxLng - minLng + padLng * 2)) * innerW;
+        const py = innerY + innerH - ((loc.lat - minLat + padLat) / (maxLat - minLat + padLat * 2)) * innerH;
+        doc.save();
+        doc.circle(px, py, 5).fill(ACCENT_COLOR);
+        doc.restore();
+        doc.fontSize(7).fillColor(DARK_TEXT).text(`${i + 1}`, px - 4, py + 7, { width: 60 });
+      });
+
+      doc.y = mapBoxY + mapBoxH + 15;
+
+      allLocations.forEach((loc, idx) => {
+        if (doc.y > PAGE_H - 100) doc.addPage();
+        const rowY = doc.y;
+        drawRoundedBox(doc, MARGIN + 10, rowY, 26, 26, PRIMARY_COLOR);
+        doc.fontSize(12).fillColor(WHITE).text(`${idx + 1}`, MARGIN + 16, rowY + 6, { width: 16, align: 'center' });
+        doc.fontSize(12).fillColor(DARK_TEXT).text(loc.name, MARGIN + 46, rowY + 2, { width: PAGE_W - MARGIN * 2 - 200 });
+        doc.fontSize(9).fillColor(LIGHT_TEXT).text(`${loc.lat.toFixed(4)}, ${loc.lng.toFixed(4)}`, MARGIN + 46, rowY + 18, { width: PAGE_W - MARGIN * 2 - 200 });
+        doc.fontSize(9).fillColor(LIGHT_TEXT).text(safeStr(loc.type, ''), PAGE_W - MARGIN - 100, rowY + 5, { width: 90, align: 'right' });
+        if (loc.address) {
+          doc.fontSize(9).fillColor('#B2BEC3').text(loc.address, MARGIN + 46, rowY + 30, { width: PAGE_W - MARGIN * 2 - 60 });
+          doc.y = rowY + 44;
+        } else {
+          doc.y = rowY + 32;
+        }
+      });
+
+      doc.y += 10;
+      doc.fontSize(10).fillColor(LIGHT_TEXT).text(`Google Maps: https://www.google.com/maps/dir/${allLocations.map(l => `${l.lat},${l.lng}`).join('/')}`, MARGIN + 10, doc.y, { width: PAGE_W - MARGIN * 2 - 20 });
+    } else {
+      doc.fontSize(12).fillColor(LIGHT_TEXT).text('No destinations with coordinates.', MARGIN + 20, doc.y + 20);
+    }
+
+    // === Section 4: Bookings & Tickets ===
+    doc.addPage();
+    addSectionHeader(doc, 'Bookings & Tickets', '\u{1F3AB}');
+
+    if (bookings.length === 0 && digitalTickets.length === 0) {
+      doc.fontSize(12).fillColor(LIGHT_TEXT).text('No bookings or tickets.', MARGIN + 20, doc.y + 20);
+    } else {
+      if (bookings.length > 0) {
+        doc.fontSize(13).fillColor(DARK_TEXT).text('Bookings', MARGIN + 10);
+        doc.y += 5;
+        const typeIcons: Record<string, string> = { flight: '\u2708\uFE0F', hotel: '\u{1F3E8}', activity: '\u{1F3AF}', restaurant: '\u{1F37D}\uFE0F' };
+        bookings.forEach((booking: any) => {
+          if (doc.y > PAGE_H - 120) doc.addPage();
+          const bY = doc.y;
+          const statusColor = booking.status === 'confirmed' ? '#00B894' : booking.status === 'cancelled' ? '#D63031' : '#FDCB6E';
+          drawRoundedBox(doc, MARGIN + 10, bY, PAGE_W - MARGIN * 2 - 20, booking.notes ? 85 : 65, WHITE);
+          doc.rect(MARGIN + 10, bY, 5, 85).fill(statusColor);
+          doc.fontSize(13).fillColor(DARK_TEXT).text(`${typeIcons[booking.type] || '\u{1F4CB}'} ${booking.title}`, MARGIN + 26, bY + 8, { width: PAGE_W - MARGIN * 2 - 50 });
+          doc.fontSize(10).fillColor(LIGHT_TEXT).text(`${safeStr(booking.date)}  |  ${safeStr(booking.start_time)} - ${safeStr(booking.end_time)}`, MARGIN + 26, bY + 26);
+          doc.fontSize(10).fillColor(LIGHT_TEXT).text(`Location: ${safeStr(booking.location)}`, MARGIN + 26, bY + 42);
+          if (booking.cost) {
+            doc.fontSize(10).fillColor(ACCENT_COLOR).text(formatCurrency(booking.cost, booking.currency || 'JPY'), PAGE_W - MARGIN - 110, bY + 8, { width: 100, align: 'right' });
+          }
+          if (booking.booking_ref) {
+            doc.fontSize(9).fillColor('#B2BEC3').text(`Ref: ${booking.booking_ref}`, MARGIN + 26, bY + 58);
+          }
+          if (booking.notes) {
+            doc.fontSize(9).fillColor('#B2BEC3').text(`Note: ${booking.notes}`, MARGIN + 26, bY + 72, { width: PAGE_W - MARGIN * 2 - 50 });
+          }
+          doc.y = bY + (booking.notes ? 92 : 72);
+        });
+      }
+
+      if (digitalTickets.length > 0) {
+        doc.y += 10;
+        doc.fontSize(13).fillColor(DARK_TEXT).text('Digital Tickets', MARGIN + 10);
+        doc.y += 5;
+        digitalTickets.forEach((ticket: any) => {
+          if (doc.y > PAGE_H - 100) doc.addPage();
+          const tY = doc.y;
+          const validColor = ticket.status === 'active' ? '#00B894' : '#B2BEC3';
+          drawRoundedBox(doc, MARGIN + 10, tY, PAGE_W - MARGIN * 2 - 20, 55, WHITE);
+          doc.rect(MARGIN + 10, tY, 5, 55).fill(validColor);
+          doc.fontSize(12).fillColor(DARK_TEXT).text(`\u{1F39F}\uFE0F ${ticket.ticket_name}`, MARGIN + 26, tY + 8);
+          doc.fontSize(9).fillColor(LIGHT_TEXT).text(`${ticket.ticket_type} | Provider: ${safeStr(ticket.provider_name)}`, MARGIN + 26, tY + 26);
+          doc.fontSize(9).fillColor(LIGHT_TEXT).text(`Valid: ${safeStr(ticket.valid_from)} ~ ${safeStr(ticket.valid_until)}`, MARGIN + 26, tY + 40);
+          if (ticket.ticket_number) {
+            doc.fontSize(9).fillColor(PRIMARY_COLOR).text(`#${ticket.ticket_number}`, PAGE_W - MARGIN - 110, tY + 10, { width: 100, align: 'right' });
+          }
+          doc.y = tY + 62;
+        });
+      }
+    }
+
+    // === Section 5: Transportation ===
+    doc.addPage();
+    addSectionHeader(doc, 'Transportation', '\u{1F686}');
+
+    if (transportModes.length === 0 && transportSegments.length === 0) {
+      doc.fontSize(12).fillColor(LIGHT_TEXT).text('No transportation data.', MARGIN + 20, doc.y + 20);
+    } else {
+      if (transportModes.length > 0) {
+        doc.fontSize(12).fillColor(DARK_TEXT).text('Available Modes', MARGIN + 10);
+        doc.y += 5;
+        const modeIcons: Record<string, string> = { walking: '\u{1F6B6}', public: '\u{1F68C}', taxi: '\u{1F695}', bike: '\u{1F6B2}', car: '\u{1F697}', train: '\u{1F683}', bus: '\u{1F68C}', ferry: '\u{26F4}\uFE0F' };
+        transportModes.forEach((mode: any) => {
+          if (doc.y > PAGE_H - 80) doc.addPage();
+          const mY = doc.y;
+          drawRoundedBox(doc, MARGIN + 10, mY, PAGE_W - MARGIN * 2 - 20, 40, '#F8F9FA');
+          doc.fontSize(12).fillColor(DARK_TEXT).text(`${modeIcons[mode.type] || '\u{1F697}'} ${mode.name}`, MARGIN + 20, mY + 5);
+          doc.fontSize(9).fillColor(LIGHT_TEXT).text(`${mode.type} | Cost: ${mode.cost_per_km}/km | Reliability: ${((mode.reliability_score || 1) * 100).toFixed(0)}%`, MARGIN + 20, mY + 22);
+          doc.y = mY + 46;
+        });
+      }
+
+      if (transportSegments.length > 0) {
+        doc.y += 10;
+        doc.fontSize(12).fillColor(DARK_TEXT).text('Route Segments', MARGIN + 10);
+        doc.y += 5;
+        transportSegments.forEach((seg: any, idx: number) => {
+          if (doc.y > PAGE_H - 80) doc.addPage();
+          const sY = doc.y;
+          drawRoundedBox(doc, MARGIN + 20, sY, 30, 30, PRIMARY_COLOR);
+          doc.fontSize(11).fillColor(WHITE).text(`${idx + 1}`, MARGIN + 27, sY + 8, { width: 18, align: 'center' });
+          doc.fontSize(11).fillColor(DARK_TEXT).text(`${seg.mode_name || 'Transport'}`, MARGIN + 60, sY + 4);
+          doc.fontSize(9).fillColor(LIGHT_TEXT).text(`Duration: ${seg.duration_minutes || '--'} min | Distance: ${(seg.distance_meters / 1000).toFixed(1)} km`, MARGIN + 60, sY + 20);
+          if (seg.cost) {
+            doc.fontSize(10).fillColor(ACCENT_COLOR).text(formatCurrency(seg.cost), PAGE_W - MARGIN - 100, sY + 6, { width: 90, align: 'right' });
+          }
+          doc.y = sY + 38;
+        });
+      }
+    }
+
+    // === Section 6: Expense Summary ===
+    doc.addPage();
+    addSectionHeader(doc, 'Expense Summary', '\u{1F4B0}');
+
+    if (expenses.length === 0) {
+      doc.fontSize(12).fillColor(LIGHT_TEXT).text('No expenses recorded.', MARGIN + 20, doc.y + 20);
+    } else {
+      const categoryTotals: Record<string, { amount: number; currency: string; icon: string; count: number }> = {};
+      let grandTotal = 0;
+      expenses.forEach((exp: any) => {
+        const cat = exp.category_name || 'Other';
+        if (!categoryTotals[cat]) {
+          categoryTotals[cat] = { amount: 0, currency: exp.currency || 'TWD', icon: exp.category_icon || '\u{1F4B0}', count: 0 };
+        }
+        categoryTotals[cat].amount += exp.amount || 0;
+        categoryTotals[cat].count += 1;
+        grandTotal += exp.amount || 0;
+      });
+
+      doc.fontSize(12).fillColor(DARK_TEXT).text('Category Breakdown', MARGIN + 10);
+      doc.y += 5;
+      Object.entries(categoryTotals).forEach(([catName, data]) => {
+        if (doc.y > PAGE_H - 80) doc.addPage();
+        const cY = doc.y;
+        drawRoundedBox(doc, MARGIN + 10, cY, PAGE_W - MARGIN * 2 - 20, 36, '#F8F9FA');
+        const barW = Math.min((data.amount / grandTotal) * (PAGE_W - MARGIN * 2 - 100), PAGE_W - MARGIN * 2 - 100);
+        doc.save();
+        doc.rect(MARGIN + 10, cY + 30, barW, 4).fill(PRIMARY_COLOR);
+        doc.restore();
+        doc.fontSize(11).fillColor(DARK_TEXT).text(`${data.icon} ${catName}`, MARGIN + 20, cY + 5);
+        doc.fontSize(10).fillColor(ACCENT_COLOR).text(formatCurrency(data.amount, data.currency), PAGE_W - MARGIN - 110, cY + 5, { width: 100, align: 'right' });
+        doc.fontSize(8).fillColor(LIGHT_TEXT).text(`${data.count} items`, MARGIN + 20, cY + 20);
+        doc.y = cY + 42;
+      });
+
+      doc.y += 10;
+      drawRoundedBox(doc, MARGIN + 10, doc.y, PAGE_W - MARGIN * 2 - 20, 40, DARK_TEXT);
+      doc.fontSize(14).fillColor(WHITE).text('Grand Total', MARGIN + 20, doc.y + 10);
+      doc.fontSize(14).fillColor(ACCENT_COLOR).text(`${grandTotal.toLocaleString()}`, PAGE_W - MARGIN - 150, doc.y + 10, { width: 140, align: 'right' });
+      doc.y += 50;
+
+      doc.fontSize(12).fillColor(DARK_TEXT).text('Recent Expenses', MARGIN + 10);
+      doc.y += 5;
+      expenses.slice(0, 15).forEach((exp: any) => {
+        if (doc.y > PAGE_H - 70) doc.addPage();
+        const eY = doc.y;
+        doc.fontSize(10).fillColor(DARK_TEXT).text(`${exp.category_icon || '\u{1F4B0}'} ${exp.description}`, MARGIN + 20, eY);
+        doc.fontSize(9).fillColor(LIGHT_TEXT).text(`${safeStr(exp.expense_date)} | ${safeStr(exp.location, '')}`, MARGIN + 20, eY + 14);
+        doc.fontSize(10).fillColor(ACCENT_COLOR).text(formatCurrency(exp.amount, exp.currency || 'TWD'), PAGE_W - MARGIN - 110, eY + 2, { width: 100, align: 'right' });
+        doc.y = eY + 32;
+      });
+    }
+
+    // === Section 7: Travel Companions ===
+    doc.addPage();
+    addSectionHeader(doc, 'Travel Companions', '\u{1F465}');
+
+    if (collaborators.length === 0) {
+      doc.fontSize(12).fillColor(LIGHT_TEXT).text('No travel companions.', MARGIN + 20, doc.y + 20);
+    } else {
+      collaborators.forEach((collab: any) => {
+        if (doc.y > PAGE_H - 80) doc.addPage();
+        const cY = doc.y;
+        drawRoundedBox(doc, MARGIN + 10, cY, PAGE_W - MARGIN * 2 - 20, 50, '#F8F9FA');
+        doc.save();
+        doc.circle(MARGIN + 35, cY + 25, 15).fill(PRIMARY_COLOR);
+        doc.restore();
+        doc.fontSize(12).fillColor(WHITE).text((collab.name || '?')[0].toUpperCase(), MARGIN + 28, cY + 18, { width: 16, align: 'center' });
+        doc.fontSize(13).fillColor(DARK_TEXT).text(collab.name || 'Unknown', MARGIN + 58, cY + 8);
+        doc.fontSize(10).fillColor(LIGHT_TEXT).text(`Role: ${collab.role} | Email: ${safeStr(collab.email)}`, MARGIN + 58, cY + 26);
+        doc.y = cY + 58;
+      });
+    }
+
+    // === Section 8: Emergency Info ===
+    doc.addPage();
+    addSectionHeader(doc, 'Emergency Information', '\u{1F198}');
+
+    drawRoundedBox(doc, MARGIN, doc.y, PAGE_W - MARGIN * 2, 80, '#FF7675');
+    doc.fontSize(14).fillColor(WHITE).text('Emergency Numbers', MARGIN + 16, doc.y + 8);
+    doc.fontSize(12).fillColor(WHITE).text('Police: 110  |  Ambulance: 119  |  Fire: 118', MARGIN + 16, doc.y + 26);
+    doc.fontSize(10).fillColor('#FADADD').text('Japan Tourist Hotline: +81-50-3816-2787 (Multilingual)', MARGIN + 16, doc.y + 44);
+    doc.y += 90;
+
+    if (trip.destination) {
+      doc.fontSize(11).fillColor(DARK_TEXT).text(`Emergency services for ${trip.destination}:`, MARGIN + 10);
+      doc.y += 5;
+      const emergencyTips: Record<string, string[]> = {
+        'japan': ['Police: 110', 'Ambulance/Fire: 119', 'Japan Tourism Agency: +81-3-5329-1200'],
+        'korea': ['Police: 112', 'Ambulance/Fire: 119', 'Korea Tourism: 1330'],
+      };
+      const destLower = (trip.destination || '').toLowerCase();
+      const tips = emergencyTips[destLower] || ['Check local emergency numbers'];
+      tips.forEach(tip => {
+        doc.fontSize(10).fillColor(LIGHT_TEXT).text(`  - ${tip}`, MARGIN + 16);
+        doc.y += 3;
+      });
+    }
+
+    if (emergencyContacts.length > 0) {
+      doc.y += 10;
+      doc.fontSize(12).fillColor(DARK_TEXT).text('Personal Emergency Contacts', MARGIN + 10);
+      doc.y += 5;
+      emergencyContacts.forEach((contact: any) => {
+        if (doc.y > PAGE_H - 80) doc.addPage();
+        const ecY = doc.y;
+        drawRoundedBox(doc, MARGIN + 10, ecY, PAGE_W - MARGIN * 2 - 20, 38, '#F8F9FA');
+        doc.fontSize(11).fillColor(DARK_TEXT).text(`${contact.name} (${contact.relationship})`, MARGIN + 20, ecY + 5);
+        doc.fontSize(10).fillColor(PRIMARY_COLOR).text(`${safeStr(contact.country_code, '+886')}${contact.phone}`, MARGIN + 20, ecY + 20);
+        if (contact.email) {
+          doc.fontSize(9).fillColor(LIGHT_TEXT).text(contact.email, PAGE_W - MARGIN - 180, ecY + 8, { width: 170, align: 'right' });
+        }
+        doc.y = ecY + 44;
+      });
+    }
+
+    // === Footer on each page ===
+    const totalPages = doc.bufferedPageRange().count;
+    for (let i = 0; i < totalPages; i++) {
+      doc.switchToPage(i);
+      if (i === 0) continue;
+      doc.save();
+      doc.fontSize(8).fillColor('#B2BEC3');
+      doc.text(`ZenVoyage Travel Handbook  |  ${trip.name}`, MARGIN, PAGE_H - 30, { width: PAGE_W / 2 });
+      doc.text(`Page ${i + 1} of ${totalPages}`, PAGE_W / 2, PAGE_H - 30, { width: PAGE_W / 2 - MARGIN, align: 'right' });
+      doc.restore();
+    }
+
+    doc.end();
+
+    stream.on('finish', () => {
+      res.download(pdfPath, `ZenVoyage-${(trip.name || 'Travel').replace(/[^a-zA-Z0-9\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff]/g, '_')}-Handbook.pdf`, (err) => {
+        if (err) {
+          console.error('PDF download error:', err);
+          if (!res.headersSent) res.status(500).json({ error: 'Failed to download PDF' });
+        }
+        try { if (fs.existsSync(pdfPath)) fs.unlinkSync(pdfPath); } catch {}
+      });
+    });
+
+  } catch (error) {
+    console.error('PDF export error:', error);
+    if (!res.headersSent) res.status(500).json({ error: error instanceof Error ? error.message : 'Internal server error' });
+  }
+});
+
+// F49: AI 對話式行程修改
+interface AIModifyRequest {
+  message: string;
+  context?: {
+    trip_name?: string;
+    current_timeline?: any[];
+    destinations?: any[];
+    preferences?: any;
+  };
+}
+
+interface AIModifyResponse {
+  response: string;
+  suggestions?: Array<{
+    type: 'timeline' | 'destination' | 'transportation' | 'preference';
+    action: string;
+    details: any;
+  }>;
+  confidence?: number;
+}
+
+/**
+ * POST /api/trips/:id/ai-modify - AI-powered itinerary modification
+ */
+app.post('/api/trips/:id/ai-modify', async (req, res) => {
+  try {
+    console.log('AI modification requested for trip:', req.params.id);
+    
+    const user = getCurrentUser(req) as any;
+    const { message, context } = req.body as AIModifyRequest;
+    
+    if (!message || message.trim().length === 0) {
+      return res.status(400).json({ error: 'Message is required' });
+    }
+
+    const db = getDatabase();
+    const tripId = req.params.id;
+
+    // Verify trip ownership and existence
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(tripId, user.id) as any;
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    // Get current trip data for context
+    const tripData = {
+      trip_name: (trip as any).name,
+      destinations: db.prepare('SELECT * FROM destinations WHERE trip_id = ?').all(tripId),
+      timeline_items: db.prepare(`
+        SELECT ti.*, d.name as destination_name 
+        FROM timeline_items ti 
+        LEFT JOIN destinations d ON ti.destination_id = d.id 
+        WHERE ti.trip_id = ? 
+        ORDER BY ti.start_time ASC
+      `).all(tripId),
+      transportation_modes: db.prepare('SELECT * FROM transportation_modes WHERE trip_id = ?').all(tripId),
+      preferences: {
+        timezone: (trip as any).timezone,
+        base_location: (trip as any).base_location,
+      }
+    };
+
+    // Build AI prompt with context
+    const systemPrompt = `你是一個專業的旅遊規劃助手，名為 ZenVoyage AI。你的任務是幫助用戶修改和優化他們的旅遊行程。
+
+用戶當前的行程信息：
+- 行程名稱: ${(trip as any).name}
+- 目的地數量: ${tripData.destinations.length} 個
+- 行程項目數量: ${tripData.timeline_items.length} 個
+- 交通方式數量: ${tripData.transportation_modes.length} 種
+
+請根據用戶的自然語言請求，提供智能的行程修改建議。你可以：
+1. 添加或刪除行程項目
+2. 調整時間安排
+3. 推薦新的目的地
+4. 建議交通方式
+5. 調整停留時間
+6. 提供其他相關建議
+
+請用繁體中文回應，並保持專業和友好的語氣。如果需要特定的修改，請提供具體的建議和原因。
+
+用戶請求：${message}`;
+
+    // Simulate AI response (in real implementation, this would call an actual AI service)
+    const aiResponse = await simulateAIResponse(systemPrompt, message, tripData);
+
+    // Save conversation to database
+    try {
+      const conversationStmt = db.prepare(`
+        INSERT INTO ai_conversations 
+        (id, trip_id, message, response, model, created_at) 
+        VALUES (?, ?, ?, ?, ?, ?)
+      `);
+      conversationStmt.run(generateUUID(), tripId, message, JSON.stringify(aiResponse), 'ZenVoyage-Simulated', new Date().toISOString());
+    } catch (error) {
+      console.log('Failed to save AI conversation:', error);
+    }
+
+    // Return AI response
+    res.json({
+      success: true,
+      response: (aiResponse as any).response,
+      suggestions: (aiResponse as any).suggestions || [],
+      confidence: (aiResponse as any).confidence || 0.8,
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error: any) {
+    console.error('AI modification error:', error);
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+/**
+ * GET /api/trips/:id/ai-conversation - Get AI conversation history
+ */
+app.get('/api/trips/:id/ai-conversation', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const tripId = req.params.id;
+    const db = getDatabase();
+
+    // Verify trip ownership and existence
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(tripId, user.id) as any;
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    // Get conversation history
+    const conversations = db.prepare(`
+      SELECT * FROM ai_conversations 
+      WHERE trip_id = ? 
+      ORDER BY created_at DESC 
+      LIMIT 50
+    `).all(tripId);
+
+    // Format messages for frontend
+    const messages = (conversations as any[]).map(conv => ({
+      id: (conv as any).id,
+      type: 'ai',
+      content: (conv as any).response,
+      timestamp: (conv as any).created_at,
+      user_message: (conv as any).message,
+    }));
+
+    res.json({
+      messages,
+      total_count: messages.length
+    });
+
+  } catch (error: any) {
+    console.error('AI conversation history error:', error);
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// Serve Flutter Web static files only for non-API requests
+
+// Helper function to simulate AI response
+async function simulateAIResponse(systemPrompt: string, userMessage: string, tripData: any): Promise<AIModifyResponse> {
+  // Simple simulation - in production, this would call an actual AI service like OpenAI, Claude, etc.
+  const lowerMessage = userMessage.toLowerCase();
+  
+  let response = '';
+  let suggestions: AIModifyResponse['suggestions'] = [];
+  let confidence = 0.8;
+
+  if (lowerMessage.includes('增加') || lowerMessage.includes('添加') || lowerMessage.includes('新增')) {
+    response = `我了解您想要增加新的行程項目。根據您的需求，我建議可以在您現有的行程中添加一些有趣的活動或景點。`;
+    suggestions = [{
+      type: 'timeline',
+      action: 'add',
+      details: {
+        title: '推薦新增活動',
+        description: '根據您的喜好推薦',
+        estimated_time: '2-3小時',
+        priority: 'medium'
+      }
+    }];
+    confidence = 0.9;
+  } 
+  else if (lowerMessage.includes('調整') || lowerMessage.includes('修改') || lowerMessage.includes('變更')) {
+    response = `我理解您想要調整行程。讓我為您提供一些時間安排上的建議，讓您的行程更加合理和舒適。`;
+    suggestions = [{
+      type: 'timeline',
+      action: 'modify',
+      details: {
+        title: '時間優化建議',
+        description: '根據交通便利性調整',
+        estimated_time: '30分鐘',
+        priority: 'high'
+      }
+    }];
+    confidence = 0.85;
+  }
+  else if (lowerMessage.includes('刪除') || lowerMessage.includes('移除') || lowerMessage.includes('不要')) {
+    response = `我了解您想要移除某些行程項目。讓我幫您分析哪些項目可以安全移除而不影響整體行程體驗。`;
+    suggestions = [{
+      type: 'timeline',
+      action: 'remove',
+      details: {
+        title: '行程項目移除建議',
+        description: '低優先級項目可移除',
+        estimated_time: '節省1-2小時',
+        priority: 'low'
+      }
+    }];
+    confidence = 0.8;
+  }
+  else if (lowerMessage.includes('推薦') || lowerMessage.includes('建議') || lowerMessage.includes('有什麼')) {
+    response = `根據您當前的行程目的地和偏好，我為您推薦一些值得一遊的景點和活動。`;
+    suggestions = [{
+      type: 'destination',
+      action: 'recommend',
+      details: {
+        title: '景點推薦',
+        description: '根據您的興趣推薦',
+        estimated_time: '半天',
+        priority: 'medium'
+      }
+    }];
+    confidence = 0.9;
+  }
+  else {
+    response = `我理解您想要修改行程。為了更好地幫助您，請告訴我具體想要修改什麼？例如：
+- 想要添加哪些活動或景點？
+- 希望調整時間安排？
+- 想要移除某些行程項目？
+- 需要交通方式建議？`;
+    suggestions = [{
+      type: 'preference',
+      action: 'clarify',
+      details: {
+        title: '需要更多資訊',
+        description: '請提供具體修改需求',
+        estimated_time: '15分鐘',
+        priority: 'low'
+      }
+    }];
+    confidence = 0.7;
+  }
+
+  return { response, suggestions, confidence };
+}
+
+/**
+ * F50: GET /api/trips/:id/memories - Generate automatic travel memories based on GPS tracks and photos
+ */
+app.get('/api/trips/:id/memories', async (req, res) => {
+  try {
+    console.log('Travel memories requested for trip:', req.params.id);
+    
+    const user = getCurrentUser(req) as any;
+    const tripId = req.params.id;
+    const db = getDatabase();
+
+    // Verify trip ownership and existence
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(tripId, user.id) as any;
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    // Get GPS tracking data
+    const gpsData = db.prepare(`
+      SELECT gl.*, g.device_id, g.accuracy, g.timestamp as gps_timestamp
+      FROM gps_locations gl
+      JOIN gps_tracking g ON gl.tracking_session_id = g.id
+      WHERE g.trip_id = ?
+      ORDER BY gl.timestamp ASC
+    `).all(tripId);
+
+    // Get memory photos
+    const memoryPhotos = db.prepare(`
+      SELECT mp.*, p.file_path, p.description, p.taken_at
+      FROM memory_photos mp
+      JOIN photos p ON mp.photo_id = p.id
+      WHERE mp.trip_id = ?
+      ORDER BY mp.created_at DESC
+    `).all(tripId);
+
+    // Generate memory segments based on GPS clusters
+    const memorySegments = generateMemorySegments(gpsData, memoryPhotos);
+
+    // Get popular destinations visited
+    const destinations = db.prepare(`
+      SELECT d.*, COUNT(*) as visit_count
+      FROM destinations d
+      LEFT JOIN timeline_items ti ON d.id = ti.destination_id
+      WHERE d.trip_id = ?
+      GROUP BY d.id
+      ORDER BY visit_count DESC
+    `).all(tripId);
+
+    // Format response for frontend
+    const memories = {
+      trip_name: trip.name,
+      total_distance: calculateTotalDistance(gpsData),
+      total_duration: calculateTotalDuration(gpsData),
+      memory_segments: memorySegments,
+      popular_destinations: destinations.slice(0, 5),
+      total_photos: memoryPhotos.length,
+      generated_at: new Date().toISOString()
+    };
+
+    res.json({
+      success: true,
+      memories,
+      summary: generateMemorySummary(memories)
+    });
+
+  } catch (error: any) {
+    console.error('Travel memories generation error:', error);
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// Helper function to generate memory segments from GPS data
+function generateMemorySegments(gpsData: any[], photos: any[]): Array<{
+  id: string;
+  title: string;
+  description: string;
+  location: string;
+  start_time: string;
+  end_time: string;
+  duration: string;
+  distance: number;
+  photos_count: number;
+  coordinates: { lat: number; lng: number };
+}> {
+  const segments = [];
+  
+  if (gpsData.length === 0) {
+    return [{
+      id: 'no-data',
+      title: '尚無足跡數據',
+      description: '請先開啟GPS追蹤功能來記錄您的足跡',
+      location: '未知',
+      start_time: new Date().toISOString(),
+      end_time: new Date().toISOString(),
+      duration: '0分鐘',
+      distance: 0,
+      photos_count: photos.length,
+      coordinates: { lat: 0, lng: 0 }
+    }];
+  }
+
+  // Simple clustering: group GPS points by time proximity (1 hour gaps)
+  let currentSegment = [];
+  let segmentId = 1;
+
+  for (let i = 0; i < gpsData.length; i++) {
+    const currentPoint = gpsData[i];
+    
+    if (currentSegment.length === 0) {
+      currentSegment.push(currentPoint);
+    } else {
+      const lastPoint = currentSegment[currentSegment.length - 1];
+      const timeDiff = new Date(currentPoint.timestamp).getTime() - new Date(lastPoint.timestamp).getTime();
+      
+      // If gap is more than 1 hour, create new segment
+      if (timeDiff > 60 * 60 * 1000) {
+        if (currentSegment.length > 0) {
+          segments.push(createMemorySegment(currentSegment, photos, segmentId));
+          segmentId++;
+        }
+        currentSegment = [currentPoint];
+      } else {
+        currentSegment.push(currentPoint);
+      }
+    }
+  }
+
+  // Add the last segment
+  if (currentSegment.length > 0) {
+    segments.push(createMemorySegment(currentSegment, photos, segmentId));
+  }
+
+  return segments;
+}
+
+function createMemorySegment(points: any[], photos: any[], segmentId: number) {
+  const startTime = points[0].timestamp;
+  const endTime = points[points.length - 1].timestamp;
+  const duration = new Date(endTime).getTime() - new Date(startTime).getTime();
+  
+  // Calculate average position
+  const avgLat = points.reduce((sum, p) => sum + p.latitude, 0) / points.length;
+  const avgLng = points.reduce((sum, p) => sum + p.longitude, 0) / points.length;
+  
+  // Find photos in this time range
+  const segmentPhotos = photos.filter(photo => {
+    const photoTime = new Date(photo.taken_at).getTime();
+    return photoTime >= new Date(startTime).getTime() && photoTime <= new Date(endTime).getTime();
+  });
+
+  return {
+    id: `segment-${segmentId}`,
+    title: `第 ${segmentId} 段足跡`,
+    description: `在這段時間內您探索了 ${points.length} 個位置`,
+    location: `(${avgLat.toFixed(4)}, ${avgLng.toFixed(4)})`,
+    start_time: startTime,
+    end_time: endTime,
+    duration: `${Math.round(duration / (60 * 1000))} 分鐘`,
+    distance: calculateSegmentDistance(points),
+    photos_count: segmentPhotos.length,
+    coordinates: { lat: avgLat, lng: avgLng }
+  };
+}
+
+function calculateTotalDistance(gpsData: any[]): number {
+  if (gpsData.length < 2) return 0;
+  
+  let total = 0;
+  for (let i = 1; i < gpsData.length; i++) {
+    total += calculateDistance(
+      gpsData[i-1].latitude, gpsData[i-1].longitude,
+      gpsData[i].latitude, gpsData[i].longitude
+    );
+  }
+  return total / 1000;
+}
+
+function calculateSegmentDistance(points: any[]): number {
+  if (points.length < 2) return 0;
+  
+  let total = 0;
+  for (let i = 1; i < points.length; i++) {
+    total += calculateDistance(
+      points[i-1].latitude, points[i-1].longitude,
+      points[i].latitude, points[i].longitude
+    );
+  }
+  return total / 1000;
+}
+
+function calculateTotalDuration(gpsData: any[]): string {
+  if (gpsData.length === 0) return '0分鐘';
+  
+  const startTime = new Date(gpsData[0].timestamp).getTime();
+  const endTime = new Date(gpsData[gpsData.length - 1].timestamp).getTime();
+  const duration = endTime - startTime;
+  
+  const hours = Math.floor(duration / (1000 * 60 * 60));
+  const minutes = Math.round((duration % (1000 * 60 * 60)) / (1000 * 60));
+  
+  if (hours > 0) {
+    return `${hours}小時${minutes}分鐘`;
+  }
+  return `${minutes}分鐘`;
+}
+
+
+function generateMemorySummary(memories: any): string {
+  const segments = memories.memory_segments.length;
+  const distance = memories.total_distance.toFixed(2);
+  const duration = memories.total_duration;
+  const photos = memories.total_photos;
+  const destinations = memories.popular_destinations.length;
+  
+  return `您這次的 ${memories.trip_name} 行程總共記錄了 ${segments} 段足跡，總距離 ${distance} 公里，總共 ${duration}，探索了 ${destinations} 個熱門地點，並拍攝了 ${photos} 張照片。這是一段充滿回憶的旅程！`;
+}
 
 // Serve Flutter Web static files only for non-API requests
 const flutterBuildPath = path.join(__dirname, '../../app/build/web');

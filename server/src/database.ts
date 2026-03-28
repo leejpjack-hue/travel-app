@@ -24,6 +24,9 @@ export function initializeDatabase() {
     // Create tables
     createTables();
 
+    // Initialize Module 5 data
+    insertDefaultExpenseCategories();
+
     console.log('🗄️ SQLite database initialized successfully');
     console.log(`📁 Database file: ${dbPath}`);
   } catch (error) {
@@ -31,13 +34,14 @@ export function initializeDatabase() {
     // Fallback to in-memory if file-based fails
     database = new Database(':memory:');
     createTables();
+    // Initialize Module 5 data (in-memory fallback)
+    insertDefaultExpenseCategories();
     console.log('⚠️  Falling back to in-memory database');
   }
-}
 
 // Create database tables
 function createTables() {
-  if (!database) return;
+  if (!database) { console.log("Database not initialized, skipping function"); return; }
 
   try {
     // Create users table
@@ -226,6 +230,7 @@ function createTables() {
         trip_id TEXT NOT NULL,
         name TEXT NOT NULL,
         type TEXT NOT NULL, -- 'walking', 'public', 'taxi', 'car', 'bike', 'train', 'bus', 'ferry'
+        priority INTEGER DEFAULT 0, -- Priority for sorting (0 = highest priority)
         cost_per_km INTEGER DEFAULT 0,
         duration_factor REAL DEFAULT 1.0,
         reliability_score REAL DEFAULT 1.0,
@@ -234,7 +239,7 @@ function createTables() {
         description TEXT,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (trip_id) REFERENCES trips (id) ON DELETE CASCADE
-      )
+      );
     `);
 
     database.exec(`
@@ -486,35 +491,11 @@ function createTables() {
   }
 }
 
-// Get database instance
-export function getDatabase(): Database.Database {
-  if (!database) {
-    initializeDatabase();
-  }
-  return database!;
-}
 
-// Utility function to generate UUIDs
-export function generateUUID(): string {
-  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
-    const r = Math.random() * 16 | 0;
-    const v = c === 'x' ? r : (r & 0x3 | 0x8);
-    return v.toString(16);
-  });
-}
-
-// Close database connection gracefully
-export function closeDatabase() {
-  if (database) {
-    database.close();
-    database = null;
-    console.log('🔒 Database connection closed');
-  }
-}
 
 // Initialize default POI tags
 function initializeDefaultPoiTags() {
-  if (!database) return;
+  if (!database) { console.log("Database not initialized, skipping function"); return; }
   
   try {
     // Check if tags already exist
@@ -567,7 +548,7 @@ function initializeDefaultPoiTags() {
 
 // Insert sample Japanese transport tickets
 function insertSampleJapanTickets() {
-  if (!database) return;
+  if (!database) { console.log("Database not initialized, skipping function"); return; }
   
   try {
     // Check if tickets already exist
@@ -648,5 +629,296 @@ function insertSampleJapanTickets() {
   }
 }
 
+// Create Module 5: In-Trip Execution tables
+if (database) {
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS gps_tracking (
+      id TEXT PRIMARY KEY,
+      trip_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      start_time DATETIME,
+      end_time DATETIME,
+      is_active BOOLEAN DEFAULT FALSE,
+      total_distance_meters INTEGER DEFAULT 0,
+      tracking_session_id TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (trip_id) REFERENCES trips (id) ON DELETE CASCADE,
+      FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+    )
+  `);
+
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS gps_locations (
+      id TEXT PRIMARY KEY,
+      tracking_id TEXT NOT NULL,
+      latitude REAL NOT NULL,
+      longitude REAL NOT NULL,
+      accuracy REAL DEFAULT 0,
+      timestamp DATETIME,
+      battery_level REAL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (tracking_id) REFERENCES gps_tracking (id) ON DELETE CASCADE
+  )
+  `);
+}
+
+if (database) {
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS digital_tickets (
+      id TEXT PRIMARY KEY,
+      trip_id TEXT NOT NULL,
+      ticket_type TEXT NOT NULL, -- 'ticket', 'pass', 'coupon'
+      ticket_name TEXT NOT NULL,
+      provider_name TEXT,
+      valid_from DATE,
+      valid_until DATE,
+      ticket_number TEXT,
+      file_url TEXT, -- PDF or image URL
+      file_size_mb REAL DEFAULT 0,
+      qrcode_url TEXT,
+      status TEXT DEFAULT 'active', -- 'active', 'expired', 'used', 'cancelled'
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (trip_id) REFERENCES trips (id) ON DELETE CASCADE
+    )
+  `);
+
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS trip_alarms (
+      id TEXT PRIMARY KEY,
+      trip_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      timeline_item_id TEXT,
+    alarm_type TEXT NOT NULL, -- 'reminder', 'departure', 'arrival'
+    scheduled_time DATETIME NOT NULL,
+    reminder_message TEXT NOT NULL,
+    is_repeating BOOLEAN DEFAULT FALSE,
+    repeat_interval TEXT, -- JSON with repeat settings
+    is_active BOOLEAN DEFAULT TRUE,
+    triggered BOOLEAN DEFAULT FALSE,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (trip_id) REFERENCES trips (id) ON DELETE CASCADE,
+    FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE,
+    FOREIGN KEY (timeline_item_id) REFERENCES timeline_items (id) ON DELETE SET NULL
+  )
+  `);
+}
+
+if (database) {
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS emergency_contacts (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      relationship TEXT NOT NULL,
+      phone TEXT NOT NULL,
+      email TEXT,
+      country_code TEXT DEFAULT '+886',
+      priority INTEGER DEFAULT 1,
+      notes TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+  )
+`);
+
+database.exec(`
+  CREATE TABLE IF NOT EXISTS trip_expenses (
+    id TEXT PRIMARY KEY,
+    trip_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    amount REAL NOT NULL,
+    currency TEXT NOT NULL DEFAULT 'TWD',
+    category_id TEXT NOT NULL,
+    description TEXT NOT NULL,
+    expense_date DATE NOT NULL,
+    location TEXT,
+    payment_method TEXT,
+    receipt_url TEXT,
+    exchange_rate_to_base REAL DEFAULT 1.0,
+    base_currency_amount REAL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (trip_id) REFERENCES trips (id) ON DELETE CASCADE,
+    FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+  )
+`);
+
+database.exec(`
+  CREATE TABLE IF NOT EXISTS expense_categories (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    icon TEXT DEFAULT '💰',
+    color TEXT DEFAULT '#4ECDC4',
+    parent_category_id TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (parent_category_id) REFERENCES expense_categories (id) ON DELETE SET NULL
+  )
+  `);
+}
+
+if (database) {
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS offline_packages (
+      id TEXT PRIMARY KEY,
+      trip_id TEXT NOT NULL,
+      package_type TEXT NOT NULL, -- 'map', 'timeline', 'poi', 'weather', 'emergency'
+      version TEXT NOT NULL,
+      file_url TEXT NOT NULL,
+      file_size_mb REAL NOT NULL,
+      download_status TEXT DEFAULT 'pending', -- 'pending', 'downloading', 'completed', 'failed'
+      last_downloaded_at DATETIME,
+      expires_at DATETIME,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (trip_id) REFERENCES trips (id) ON DELETE CASCADE
+    )
+  `);
+}
+
+// Insert default expense categories
+function insertDefaultExpenseCategories() {
+  if (!database) { console.log("Database not initialized, skipping function"); return; }
+  
+  try {
+    // Check if categories already exist
+    const existingCategories = database.prepare('SELECT COUNT(*) as count FROM expense_categories').get();
+    if ((existingCategories as any).count > 0) {
+      console.log('💰 Default expense categories already exist, skipping insertion');
+      return;
+    }
+    
+    const categories = [
+      { name: '飲食', icon: '🍽️', color: '#FF6B6B', parent_category_id: null },
+      { name: '交通', icon: '🚗', color: '#4ECDC4', parent_category_id: null },
+      { name: '住宿', icon: '🏨', color: '#45B7D1', parent_category_id: null },
+      { name: '購物', icon: '🛍️', color: '#96CEB4', parent_category_id: null },
+      { name: '娛樂', icon: '🎭', color: '#FFEAA7', parent_category_id: null },
+      { name: '門票', icon: '🎫', color: '#DDA0DD', parent_category_id: null },
+      { name: '醫療', icon: '🏥', color: '#98D8C8', parent_category_id: null },
+      { name: '雜項', icon: '📝', color: '#F7DC6F', parent_category_id: null },
+    ];
+    
+    for (const category of categories) {
+      const categoryId = generateUUID();
+      database.prepare(`
+        INSERT INTO expense_categories (id, name, icon, color, parent_category_id)
+        VALUES (?, ?, ?, ?, ?)
+      `).run(categoryId, category.name, category.icon, category.color, category.parent_category_id);
+    }
+    
+    console.log('💰 Default expense categories initialized successfully');
+  } catch (error) {
+    console.error('❌ Failed to initialize default expense categories:', error);
+  }
+}
+
+// Create tables for Module 6: Export & AI (F47-F50)
+if (database) {
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS trip_splits (
+      id TEXT PRIMARY KEY,
+      trip_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      description TEXT,
+      created_by TEXT NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (trip_id) REFERENCES trips (id) ON DELETE CASCADE,
+      FOREIGN KEY (created_by) REFERENCES users (id) ON DELETE CASCADE
+    )
+  `);
+
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS trip_split_items (
+      id TEXT PRIMARY KEY,
+      split_id TEXT NOT NULL,
+      amount REAL NOT NULL,
+      description TEXT,
+      paid_by TEXT NOT NULL,
+      category TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (split_id) REFERENCES trip_splits (id) ON DELETE CASCADE,
+      FOREIGN KEY (paid_by) REFERENCES users (id) ON DELETE CASCADE
+    )
+  `);
+
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS trip_split_participants (
+      id TEXT PRIMARY KEY,
+      split_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      amount_owed REAL NOT NULL DEFAULT 0,
+      amount_paid REAL NOT NULL DEFAULT 0,
+      settled BOOLEAN DEFAULT FALSE,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (split_id) REFERENCES trip_splits (id) ON DELETE CASCADE,
+      FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+    )
+  `);
+
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS travel_memories (
+      id TEXT PRIMARY KEY,
+      trip_id TEXT NOT NULL,
+      title TEXT NOT NULL,
+      description TEXT,
+      type TEXT NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (trip_id) REFERENCES trips (id) ON DELETE CASCADE
+    )
+  `);
+
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS memory_photos (
+      id TEXT PRIMARY KEY,
+      memory_id TEXT NOT NULL,
+      photo_url TEXT NOT NULL,
+      caption TEXT,
+      taken_at DATETIME,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (memory_id) REFERENCES travel_memories (id) ON DELETE CASCADE
+    )
+  `);
+
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS ai_conversations (
+      id TEXT PRIMARY KEY,
+      trip_id TEXT NOT NULL,
+      message TEXT NOT NULL,
+      response TEXT NOT NULL,
+      context TEXT, -- JSON
+      model TEXT NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (trip_id) REFERENCES trips (id) ON DELETE CASCADE
+    )
+  `);
+}
+
+}
+
+console.log('🚗 Module 5: In-Trip Execution tables created/verified');
+console.log('🎯 Module 6: Export & AI tables created/verified');
+
 // Export database for direct use
 export { database };
+
+// Export utility functions
+export function getDatabase() {
+  if (!database) {
+    throw new Error('Database not initialized');
+  }
+  return database;
+}
+
+export function generateUUID() {
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+    const r = Math.random() * 16 | 0;
+    const v = c == 'x' ? r : (r & 0x3 | 0x8);
+    return v.toString(16);
+  });
+}

@@ -1,0 +1,5319 @@
+import express from 'express';
+import cors from 'cors';
+import path from 'path';
+import fs from 'fs';
+import { initializeDatabase, getDatabase, generateUUID } from './database';
+import { createUser, findUserByEmail, verifyPassword, getCurrentUser, generateToken } from './auth';
+const app = express();
+const PORT = process.env.PORT || 6006;
+
+// Initialize database on startup
+initializeDatabase();
+
+// Middleware
+app.use(cors());
+app.use(express.json());
+
+// Health check
+app.get('/api/health', (_req, res) => {
+  res.json({ status: 'ok', app: 'ZenVoyage', timestamp: new Date().toISOString() });
+});
+
+// Auth routes
+app.post('/api/auth/register', async (req, res) => {
+  try {
+    const { email, name, password } = req.body;
+    
+    if (!email || !name || !password) {
+      return res.status(400).json({ error: 'Email, name, and password are required' });
+    }
+    
+    if (password.length < 8) {
+      return res.status(400).json({ error: 'Password must be at least 8 characters' });
+    }
+    
+    // Check if user already exists
+    const existingUser = findUserByEmail(email);
+    if (existingUser) {
+      return res.status(409).json({ error: 'User already exists' });
+    }
+    
+    const user = await createUser(email, name, password) as any;
+    res.status(201).json({ 
+      message: 'User created successfully',
+      user: { id: user.id, email: user.email, name: user.name }
+    });
+  } catch (error) {
+    console.error('Registration error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.post('/api/auth/login', async (req, res) => {
+  try {
+    const { email, password } = req.body;
+    
+    if (!email || !password) {
+      return res.status(400).json({ error: 'Email and password are required' });
+    }
+    
+    const user = findUserByEmail(email) as any;
+    if (!user) {
+      return res.status(401).json({ error: 'Invalid email or password' });
+    }
+    
+    const isValidPassword = await verifyPassword(password, user.password_hash);
+    if (!isValidPassword) {
+      return res.status(401).json({ error: 'Invalid email or password' });
+    }
+    
+    const token = generateToken(user.id, user.email);
+    
+    res.json({ 
+      message: 'Login successful',
+      token,
+      user: { id: user.id, email: user.email, name: user.name }
+    });
+  } catch (error) {
+    console.error('Login error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.get('/api/auth/me', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    res.json({ user: { id: user.id, email: user.email, name: user.name, avatar_url: user.avatar_url } });
+  } catch (error) {
+    res.status(401).json({ error: 'Unauthorized' });
+  }
+});
+
+// Trips CRUD routes
+
+// GET /api/trips - List all trips for current user
+app.get('/api/trips', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    const stmt = db.prepare('SELECT * FROM trips WHERE user_id = ? ORDER BY created_at DESC');
+    const trips = stmt.all(user.id);
+    res.json({ trips });
+  } catch (error: any) {
+    res.status(401).json({ error: error.message || 'Unauthorized' });
+  }
+});
+
+// POST /api/trips - Create a new trip
+app.post('/api/trips', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    const { name, description, destination, start_date, end_date } = req.body;
+
+    if (!name) {
+      return res.status(400).json({ error: 'Trip name is required' });
+    }
+
+    const id = generateUUID();
+    const now = new Date().toISOString();
+
+    const stmt = db.prepare(`
+      INSERT INTO trips (id, user_id, name, description, destination, start_date, end_date, status, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?)
+    `);
+
+    stmt.run(id, user.id, name, description || null, destination || null, start_date || null, end_date || null, now, now);
+
+    const trip: any = db.prepare('SELECT * FROM trips WHERE id = ?').get(id);
+    res.status(201).json({ trip });
+  } catch (error: any) {
+    res.status(error.message?.includes('Unauthorized') ? 401 : 500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// GET /api/trips/:id - Get a single trip
+app.get('/api/trips/:id', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    // Get trip details with user filter
+    const trip: any = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+    
+    // Get destinations for this trip
+    const destinations = db.prepare('SELECT * FROM destinations WHERE trip_id = ? ORDER BY visit_date').all(trip.id);
+    
+    res.json({ trip, destinations });
+  } catch (error: any) {
+    res.status(401).json({ error: error.message || 'Unauthorized' });
+  }
+});
+
+// PUT /api/trips/:id - Update a trip
+app.put('/api/trips/:id', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    const { name, description, destination, start_date, end_date, status } = req.body;
+
+    const existing: any = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!existing) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    const now = new Date().toISOString();
+    const stmt = db.prepare(`
+      UPDATE trips SET name = ?, description = ?, destination = ?, start_date = ?, end_date = ?, status = ?, updated_at = ?
+      WHERE id = ? AND user_id = ?
+    `);
+
+    stmt.run(
+      name !== undefined ? name : existing.name,
+      description !== undefined ? description : existing.description,
+      destination !== undefined ? destination : existing.destination,
+      start_date !== undefined ? start_date : existing.start_date,
+      end_date !== undefined ? end_date : existing.end_date,
+      status !== undefined ? status : existing.status,
+      now,
+      req.params.id,
+      user.id
+    );
+
+    const trip: any = db.prepare('SELECT * FROM trips WHERE id = ?').get(req.params.id);
+    res.json({ trip });
+  } catch (error: any) {
+    res.status(error.message?.includes('Unauthorized') ? 401 : 500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// DELETE /api/trips/:id - Delete a trip
+app.delete('/api/trips/:id', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+
+    const existing = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!existing) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    db.prepare('DELETE FROM destinations WHERE trip_id = ?').run(req.params.id);
+    db.prepare('DELETE FROM trips WHERE id = ?').run(req.params.id);
+
+    res.json({ message: 'Trip deleted successfully' });
+  } catch (error: any) {
+    res.status(error.message?.includes('Unauthorized') ? 401 : 500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// Module 1: Pre-trip & Preferences APIs
+
+// POST /api/trips/:id/import-flight - Import flight information
+app.post('/api/trips/:id/import-flight', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    const { flight_number, departure_airport, arrival_airport, departure_time, arrival_time, airline } = req.body;
+
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    const flightId = generateUUID();
+    const now = new Date().toISOString();
+
+    db.prepare(`
+      INSERT INTO bookings (id, trip_id, type, title, booking_ref, date, start_time, end_time, location, status, created_at)
+      VALUES (?, ?, 'flight', ?, ?, ?, ?, ?, ?, 'confirmed', ?)
+    `).run(
+      flightId, 
+      (trip as any).id, 
+      `${airline} ${flight_number}` || 'Flight',
+      flight_number || '',
+      departure_time,
+      arrival_time,
+      `${departure_airport} → ${arrival_airport}` || '',
+      'confirmed',
+      now
+    );
+
+    const flight = db.prepare('SELECT * FROM bookings WHERE id = ?').get(flightId);
+    res.status(201).json({ 
+      message: 'Flight imported successfully',
+      flight
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// GET /api/trips/:id/weather - Get weather forecast
+app.get('/api/trips/:id/weather', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    // Mock weather data (in real app, call OpenWeather API)
+    const mockWeather = {
+      destination: (trip as any).destination,
+      forecast: [
+        {
+          date: (trip as any).start_date,
+          condition: 'sunny',
+          temp_high: 25,
+          temp_low: 18,
+          humidity: 65,
+          precipitation: 0
+        },
+        {
+          date: (trip as any).end_date,
+          condition: 'partly_cloudy',
+          temp_high: 23,
+          temp_low: 16,
+          humidity: 70,
+          precipitation: 10
+        }
+      ]
+    };
+
+    res.json({ weather: mockWeather });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// GET /api/trips/:id/visa-info - Get visa requirements
+app.get('/api/trips/:id/visa-info', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    // Mock visa info based on destination
+    const mockVisaInfo = {
+      destination: (trip as any).destination,
+      visa_required: true,
+      visa_type: 'Tourist Visa',
+      processing_time: '5-10 business days',
+      documents: [
+        'Passport valid for 6 months',
+        'Visa application form',
+        'Passport photos',
+        'Flight itinerary',
+        'Hotel reservations',
+        'Proof of funds'
+      ],
+      entry_requirements: [
+        'Return ticket',
+        'Sufficient funds for stay',
+        'Yellow fever certificate (if required)'
+      ]
+    };
+
+    res.json({ visa_info: mockVisaInfo });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// POST /api/trips/:id/packing-list - Generate packing list
+app.post('/api/trips/:id/packing-list', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    const { preferences, destination, duration } = req.body;
+
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    // Generate packing list based on trip preferences
+    const packingList = {
+      essentials: [
+        'Passport/ID',
+        'Credit cards',
+        'Cash',
+        'Phone charger',
+        'Medications',
+        'Travel insurance'
+      ],
+      clothing: [
+        'Underwear (duration + 1)',
+        'Socks (duration + 1)',
+        'T-shirts (duration + 1)',
+        'Pants/trousers (3-4)',
+        'Jacket',
+        'Sleepwear',
+        'Swimwear (if applicable)'
+      ],
+      electronics: [
+        'Phone',
+        'Power bank',
+        'Camera (optional)',
+        'Headphones'
+      ],
+      documents: [
+        'Flight tickets',
+        'Hotel confirmations',
+        'Insurance details',
+        'Emergency contacts'
+      ]
+    };
+
+    const packingListId = generateUUID();
+    const now = new Date().toISOString();
+
+    // Store packing list in database
+    db.prepare(`
+      INSERT INTO destinations (id, trip_id, name, type, description, created_at, updated_at)
+      VALUES (?, ?, 'Packing List', 'packing_list', ?, ?, ?)
+    `).run(
+      packingListId,
+      (trip as any).id,
+      JSON.stringify(packingList),
+      now,
+      now
+    );
+
+    res.status(201).json({
+      message: 'Packing list generated successfully',
+      packing_list: packingList
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// GET /api/templates - List available templates
+app.get('/api/templates', (req, res) => {
+  try {
+    const mockTemplates = [
+      {
+        id: 'tokyo-basic',
+        name: '東京基本行程',
+        description: '3天東京經典行程',
+        duration: 3,
+        destinations: ['淺草寺', '東京塔', '新宿', '渋谷'],
+        preferences: {
+          pace: 'moderate',
+          transport: 'public',
+          budget: 'medium'
+        }
+      },
+      {
+        id: 'osaka-food',
+        name: '大阪美食之旅',
+        description: '4天大阪美食探險',
+        duration: 4,
+        destinations: ['道頓堀', '大阪城', '心齋橋', '黑門市場'],
+        preferences: {
+          pace: 'relaxed',
+          transport: 'walking',
+          budget: 'low'
+        }
+      }
+    ];
+
+    res.json({ templates: mockTemplates });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// POST /api/trips/from-template/:templateId - Create trip from template
+app.post('/api/trips/from-template/:templateId', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    const { name, start_date, end_date } = req.body;
+
+    const template = {
+      id: req.params.templateId,
+      name: 'Template Name',
+      destinations: ['Destination 1', 'Destination 2'],
+      preferences: { pace: 'moderate', transport: 'public' }
+    };
+
+    if (!name || !start_date || !end_date) {
+      return res.status(400).json({ error: 'Name, start_date, and end_date are required' });
+    }
+
+    const tripId = generateUUID();
+    const now = new Date().toISOString();
+
+    // Create trip
+    const stmt = db.prepare(`
+      INSERT INTO trips (id, user_id, name, destination, start_date, end_date, preferences, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    stmt.run(
+      tripId,
+      user.id,
+      name,
+      template.destinations.join(', '),
+      start_date,
+      end_date,
+      JSON.stringify(template.preferences),
+      now,
+      now
+    );
+
+    // Add destinations from template
+    template.destinations.forEach((dest, index) => {
+      const destId = generateUUID();
+      db.prepare(`
+        INSERT INTO destinations (id, trip_id, name, type, visit_date, created_at, updated_at)
+        VALUES (?, ?, ?, 'destination', ?, ?, ?)
+      `).run(destId, tripId, dest, new Date(start_date).setDate(new Date(start_date).getDate() + index), now, now);
+    });
+
+    const trip: any = db.prepare('SELECT * FROM trips WHERE id = ?').get(tripId);
+    res.status(201).json({
+      message: 'Trip created from template successfully',
+      trip
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// Collaborators APIs
+// POST /api/trips/:id/collaborators - Add collaborator to trip
+app.post('/api/trips/:id/collaborators', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    const { collaborator_email, role = 'editor' } = req.body;
+
+    if (!collaborator_email) {
+      return res.status(400).json({ error: 'Collaborator email is required' });
+    }
+
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    // Check if collaborator exists as a user
+    const collaboratorUser = findUserByEmail(collaborator_email) as any;
+    if (!collaboratorUser) {
+      return res.status(404).json({ error: 'Collaborator user not found' });
+    }
+
+    // Check if collaborator is already added
+    const existing = db.prepare('SELECT * FROM collaborators WHERE trip_id = ? AND user_id = ?').get(req.params.id, collaboratorUser.id);
+    if (existing) {
+      return res.status(409).json({ error: 'Collaborator already added' });
+    }
+
+    const collaboratorId = generateUUID();
+    const now = new Date().toISOString();
+
+    db.prepare(`
+      INSERT INTO collaborators (id, trip_id, user_id, role, invited_at)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(collaboratorId, req.params.id, collaboratorUser.id, role, now);
+
+    const collaborator = db.prepare('SELECT * FROM collaborators WHERE id = ?').get(collaboratorId) as any;
+    res.status(201).json({
+      message: 'Collaborator added successfully',
+      collaborator: {
+        id: collaborator.id,
+        user_id: collaborator.user_id,
+        email: collaboratorUser.email,
+        name: collaboratorUser.name,
+        role: collaborator.role,
+        invited_at: collaborator.invited_at
+      }
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// GET /api/trips/:id/collaborators - Get all collaborators for a trip
+app.get('/api/trips/:id/collaborators', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    const collaborators = db.prepare(`
+      SELECT c.*, u.email, u.name
+      FROM collaborators c
+      JOIN users u ON c.user_id = u.id
+      WHERE c.trip_id = ?
+      ORDER BY c.invited_at DESC
+    `).all(req.params.id);
+
+    res.json({ collaborators });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// DELETE /api/trips/:id/collaborators/:collaboratorId - Remove collaborator
+app.delete('/api/trips/:id/collaborators/:collaboratorId', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    const collaborator = db.prepare('SELECT * FROM collaborators WHERE id = ? AND trip_id = ?').get(req.params.collaboratorId, req.params.id);
+    if (!collaborator) {
+      return res.status(404).json({ error: 'Collaborator not found' });
+    }
+
+    db.prepare('DELETE FROM collaborators WHERE id = ?').run(req.params.collaboratorId);
+
+    res.json({ message: 'Collaborator removed successfully' });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// PUT /api/trips/:id/collaborators/:collaboratorId - Update collaborator role
+app.put('/api/trips/:id/collaborators/:collaboratorId', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    const { role } = req.body;
+
+    if (!role || !['viewer', 'editor', 'admin'].includes(role)) {
+      return res.status(400).json({ error: 'Invalid role' });
+    }
+
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    const collaborator = db.prepare('SELECT * FROM collaborators WHERE id = ? AND trip_id = ?').get(req.params.collaboratorId, req.params.id);
+    if (!collaborator) {
+      return res.status(404).json({ error: 'Collaborator not found' });
+    }
+
+    const now = new Date().toISOString();
+    db.prepare(`
+      UPDATE collaborators SET role = ?, updated_at = ?
+      WHERE id = ? AND trip_id = ?
+    `).run(role, now, req.params.collaboratorId, req.params.id);
+
+    const updatedCollaborator = db.prepare('SELECT * FROM collaborators WHERE id = ?').get(req.params.collaboratorId) as any;
+    res.json({
+      message: 'Collaborator role updated successfully',
+      collaborator: {
+        id: updatedCollaborator.id,
+        user_id: updatedCollaborator.user_id,
+        role: updatedCollaborator.role,
+        invited_at: updatedCollaborator.invited_at
+      }
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// Transportation Preferences APIs
+// GET /api/users/me/preferences/transportation - Get user transportation preferences
+app.get('/api/users/me/preferences/transportation', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    
+    const preferences = db.prepare('SELECT transport_preferences FROM users WHERE id = ?').get(user.id) as any;
+    
+    const transportPrefs = preferences?.transport_preferences ? JSON.parse(preferences.transport_preferences) : {
+      preferred_modes: ['public', 'walking'],
+      avoid_tolls: false,
+      max_walking_distance: 2000,
+      wheelchair_accessible: false,
+      pet_friendly: false,
+      budget_level: 'medium'
+    };
+
+    res.json({ transportation_preferences: transportPrefs });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// PUT /api/users/me/preferences/transportation - Update transportation preferences
+app.put('/api/users/me/preferences/transportation', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    const { preferred_modes = [], avoid_tolls = false, max_walking_distance = 2000, wheelchair_accessible = false, pet_friendly = false, budget_level = 'medium' } = req.body;
+
+    const preferences = {
+      preferred_modes,
+      avoid_tolls,
+      max_walking_distance,
+      wheelchair_accessible,
+      pet_friendly,
+      budget_level,
+      updated_at: new Date().toISOString()
+    };
+
+    db.prepare(`
+      UPDATE users SET transport_preferences = ?, updated_at = ?
+      WHERE id = ?
+    `).run(JSON.stringify(preferences), new Date().toISOString(), user.id);
+
+    res.json({
+      message: 'Transportation preferences updated successfully',
+      transportation_preferences: preferences
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// Schedule Preferences APIs
+// GET /api/users/me/preferences/schedule - Get user schedule preferences
+app.get('/api/users/me/preferences/schedule', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    
+    const preferences = db.prepare('SELECT schedule_preferences FROM users WHERE id = ?').get(user.id) as any;
+    
+    const schedulePrefs = preferences?.schedule_preferences ? JSON.parse(preferences.schedule_preferences) : {
+      preferred_start_time: '09:00',
+      preferred_end_time: '18:00',
+      meal_break_duration: 60,
+      rest_break_duration: 30,
+      max_daily_hours: 10,
+      early_bird: false,
+      night_owl: false,
+      pace: 'moderate'
+    };
+
+    res.json({ schedule_preferences: schedulePrefs });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// PUT /api/users/me/preferences/schedule - Update schedule preferences
+app.put('/api/users/me/preferences/schedule', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    const { preferred_start_time = '09:00', preferred_end_time = '18:00', meal_break_duration = 60, rest_break_duration = 30, max_daily_hours = 10, early_bird = false, night_owl = false, pace = 'moderate' } = req.body;
+
+    const preferences = {
+      preferred_start_time,
+      preferred_end_time,
+      meal_break_duration,
+      rest_break_duration,
+      max_daily_hours,
+      early_bird,
+      night_owl,
+      pace,
+      updated_at: new Date().toISOString()
+    };
+
+    db.prepare(`
+      UPDATE users SET schedule_preferences = ?, updated_at = ?
+      WHERE id = ?
+    `).run(JSON.stringify(preferences), new Date().toISOString(), user.id);
+
+    res.json({
+      message: 'Schedule preferences updated successfully',
+      schedule_preferences: preferences
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// Base Day Tour Mode APIs
+// POST /api/trips/:id/base-tour-mode - Enable base day tour mode
+app.post('/api/trips/:id/base-tour-mode', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    const { base_location, tour_radius = 5000, max_destinations = 5 } = req.body;
+
+    if (!base_location) {
+      return res.status(400).json({ error: 'Base location is required' });
+    }
+
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    const now = new Date().toISOString();
+    db.prepare(`
+      UPDATE trips SET base_location = ?, tour_radius = ?, max_destinations = ?, preferences = json_set(COALESCE(preferences, '{}'), '$.base_tour_mode', true), updated_at = ?
+      WHERE id = ? AND user_id = ?
+    `).run(base_location, tour_radius, max_destinations, now, req.params.id, user.id);
+
+    // Generate sample nearby destinations
+    const sampleDestinations = [
+      { name: '咖啡店', type: 'cafe', distance: 200, duration: 30 },
+      { name: '觀景台', type: 'viewpoint', distance: 800, duration: 45 },
+      { name: '紀念品店', type: 'shopping', distance: 350, duration: 20 },
+      { name: '午餐地點', type: 'restaurant', distance: 500, duration: 60 },
+      { name: '公園', type: 'park', distance: 1200, duration: 90 }
+    ];
+
+    // Clear existing destinations and add new ones
+    db.prepare('DELETE FROM destinations WHERE trip_id = ?').run(req.params.id);
+    
+    sampleDestinations.slice(0, max_destinations).forEach((dest, index) => {
+      const destId = generateUUID();
+      db.prepare(`
+        INSERT INTO destinations (id, trip_id, name, type, description, visit_date, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(destId, req.params.id, dest.name, dest.type, `距離基地 ${dest.distance}m`, 
+        new Date((trip as any).start_date).setDate(new Date((trip as any).start_date).getDate() + index), now, now);
+    });
+
+    const updatedTrip = db.prepare('SELECT * FROM trips WHERE id = ?').get(req.params.id);
+    res.status(201).json({
+      message: 'Base tour mode enabled successfully',
+      trip: updatedTrip,
+      suggested_destinations: sampleDestinations.slice(0, max_destinations)
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// GET /api/trips/:id/base-tour-mode - Check if base tour mode is enabled
+app.get('/api/trips/:id/base-tour-mode', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    const baseTourMode = trip && (trip as any).preferences ? JSON.parse((trip as any).preferences)?.base_tour_mode || false : false;
+    const baseLocation = (trip as any).base_location;
+
+    res.json({
+      base_tour_mode: baseTourMode,
+      base_location: baseLocation,
+      tour_radius: (trip as any).tour_radius || 5000,
+      max_destinations: (trip as any).max_destinations || 5
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// API routes must be defined before static files
+
+// Module 2: Timeline & Scheduling APIs
+
+// GET /api/trips/:id/timeline - Get timeline for a trip
+app.get('/api/trips/:id/timeline', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    // Get timeline items in order (simplified to avoid join issues)
+    const timelineItems = db.prepare(`
+      SELECT ti.*, 
+             CASE WHEN ti.destination_id IS NOT NULL THEN 'destination' ELSE ti.type END as destination_name,
+             ti.type as destination_type,
+             '' as address
+      FROM timeline_items ti
+      WHERE ti.trip_id = ?
+      ORDER BY ti.order_index
+    `).all(req.params.id);
+
+    // Get business hours conflicts (simplified - no business hours support yet)
+    const conflicts: any[] = [];
+
+    // Calculate walking distances
+    const walkingDistances = db.prepare(`
+      SELECT SUM(ti.walking_distance_meters) as total_walking_distance
+      FROM timeline_items ti
+      WHERE ti.trip_id = ? AND ti.walking_distance_meters > 0
+    `).get(req.params.id);
+
+    res.json({
+      timeline_items: timelineItems,
+      business_hours_conflicts: conflicts,
+      total_walking_distance: (walkingDistances as any)?.total_walking_distance || 0,
+      daily_summary: generateDailySummary(timelineItems)
+    });
+  } catch (error: any) {
+    console.error('Timeline API error:', error);
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// POST /api/trips/:id/timeline - Add timeline item
+app.post('/api/trips/:id/timeline', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    const { destination_id, name, type, start_time, end_time, duration_minutes, buffer_minutes = 0 } = req.body;
+
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    // Get max order index
+    const maxOrder = db.prepare('SELECT MAX(order_index) as max_index FROM timeline_items WHERE trip_id = ?').get(req.params.id);
+    const newIndex = (maxOrder && (maxOrder as any)?.max_index || 0) + 1;
+
+    const timelineId = generateUUID();
+    const now = new Date().toISOString();
+
+    db.prepare(`
+      INSERT INTO timeline_items (id, trip_id, destination_id, name, type, start_time, end_time, duration_minutes, buffer_minutes, order_index, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      timelineId,
+      req.params.id,
+      destination_id,
+      name,
+      type,
+      start_time,
+      end_time,
+      duration_minutes,
+      buffer_minutes,
+      newIndex,
+      now
+    );
+
+    // Calculate and update walking distance (mock calculation)
+    if (destination_id) {
+      const walkingDistance = Math.floor(Math.random() * 1000) + 200; // Mock 200-1200m
+      db.prepare('UPDATE timeline_items SET walking_distance_meters = ? WHERE id = ?').run(walkingDistance, timelineId);
+    }
+
+    const timelineItem = db.prepare('SELECT * FROM timeline_items WHERE id = ?').get(timelineId);
+    res.status(201).json({
+      message: 'Timeline item added successfully',
+      timeline_item: timelineItem
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// PUT /api/trips/:id/timeline/:itemId - Update timeline item
+app.put('/api/trips/:id/timeline/:itemId', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    const { name, start_time, end_time, duration_minutes, buffer_minutes, locked } = req.body;
+
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    const existing = db.prepare('SELECT * FROM timeline_items WHERE id = ? AND trip_id = ?').get(req.params.itemId, req.params.id);
+    if (!existing) {
+      return res.status(404).json({ error: 'Timeline item not found' });
+    }
+
+    const now = new Date().toISOString();
+    db.prepare(`
+      UPDATE timeline_items SET 
+        name = COALESCE(?, name),
+        start_time = COALESCE(?, start_time),
+        end_time = COALESCE(?, end_time),
+        duration_minutes = COALESCE(?, duration_minutes),
+        buffer_minutes = COALESCE(?, buffer_minutes),
+        locked = COALESCE(?, locked),
+        updated_at = ?
+      WHERE id = ? AND trip_id = ?
+    `).run(
+      name,
+      start_time,
+      end_time,
+      duration_minutes,
+      buffer_minutes,
+      locked,
+      now,
+      req.params.itemId,
+      req.params.id
+    );
+
+    const updatedItem = db.prepare('SELECT * FROM timeline_items WHERE id = ?').get(req.params.itemId);
+    res.json({
+      message: 'Timeline item updated successfully',
+      timeline_item: updatedItem
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// PUT /api/trips/:id/timeline/reorder - Reorder timeline items
+app.put('/api/trips/:id/timeline/reorder', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    const { item_orders } = req.body; // Array of { item_id, new_index }
+
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    const now = new Date().toISOString();
+    for (const order of item_orders) {
+      db.prepare(`
+        UPDATE timeline_items SET order_index = ?, updated_at = ?
+        WHERE id = ? AND trip_id = ?
+      `).run(order.new_index, now, order.item_id, req.params.id);
+    }
+
+    res.json({ message: 'Timeline reordered successfully' });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// GET /api/trips/:id/timeline/conflicts - Check for timeline conflicts
+app.get('/api/trips/:id/timeline/conflicts', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    // Get overlapping timeline items
+    const conflicts = db.prepare(`
+      SELECT ti1.name as item1_name, ti2.name as item2_name,
+             ti1.start_time as item1_start, ti1.end_time as item1_end,
+             ti2.start_time as item2_start, ti2.end_time as item2_end
+      FROM timeline_items ti1
+      JOIN timeline_items ti2 ON ti1.trip_id = ti2.trip_id AND ti1.id < ti2.id
+      WHERE ti1.trip_id = ? 
+        AND ti1.start_time < ti2.end_time AND ti1.end_time > ti2.start_time
+      ORDER BY ti1.start_time
+    `).all(req.params.id);
+
+    // Get business hours conflicts
+    const businessConflicts = db.prepare(`
+      SELECT ti.name, ti.start_time, ti.end_time, d.name as destination_name,
+             d.business_hours_start, d.business_hours_end
+      FROM timeline_items ti
+      JOIN destinations d ON ti.destination_id = d.id
+      WHERE ti.trip_id = ? AND d.business_hours_start IS NOT NULL AND d.business_hours_end IS NOT NULL
+        AND (ti.start_time < d.business_hours_start || ti.end_time > d.business_hours_end)
+    `).all(req.params.id);
+
+    res.json({
+      overlapping_conflicts: conflicts,
+      business_hours_conflicts: businessConflicts,
+      total_conflicts: conflicts.length + businessConflicts.length
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// POST /api/trips/:id/timeline/smart-fill - Smart gap filling
+app.post('/api/trips/:id/timeline/smart-fill', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    const { gap_start, gap_end, preferences = {} } = req.body;
+
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    // Find suggested activities for the gap
+    const gapMinutes = (new Date(gap_end).getTime() - new Date(gap_start).getTime()) / (1000 * 60);
+    
+    // Mock suggestions based on time of day and gap duration
+    const suggestions = generateSmartFillSuggestions(gap_start, gapMinutes, preferences);
+    
+    // Add suggested timeline items
+    const addedItems = [];
+    for (const suggestion of suggestions) {
+      if (suggestion.duration_minutes <= gapMinutes) {
+        const timelineId = generateUUID();
+        const maxOrder = db.prepare('SELECT MAX(order_index) as max_index FROM timeline_items WHERE trip_id = ?').get(req.params.id);
+        const newIndex = (maxOrder && (maxOrder as any)?.max_index || 0) + 1;
+        
+        db.prepare(`
+          INSERT INTO timeline_items (id, trip_id, name, type, start_time, end_time, duration_minutes, order_index, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(
+          timelineId,
+          req.params.id,
+          suggestion.name,
+          suggestion.type,
+          suggestion.start_time,
+          suggestion.end_time,
+          suggestion.duration_minutes,
+          newIndex,
+          new Date().toISOString()
+        );
+        
+        addedItems.push({ id: timelineId, ...suggestion });
+      }
+    }
+
+    res.json({
+      message: 'Smart fill completed successfully',
+      added_items: addedItems,
+      gap_filled_minutes: addedItems.reduce((sum, item) => sum + item.duration_minutes, 0)
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// GET /api/trips/:id/travel-times - Calculate point-to-point travel times
+app.get('/api/trips/:id/travel-times', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    // Get timeline items with destination info
+    const timelineItems = db.prepare(`
+      SELECT ti.*, d.latitude, d.longitude, d.name as dest_name
+      FROM timeline_items ti
+      LEFT JOIN destinations d ON ti.destination_id = d.id
+      WHERE ti.trip_id = ?
+      ORDER BY ti.order_index
+    `).all(req.params.id);
+
+    // Calculate travel times between consecutive items
+    const travelTimes = [];
+    for (let i = 0; i < timelineItems.length - 1; i++) {
+      const from = timelineItems[i] as any;
+      const to = timelineItems[i + 1] as any;
+      
+      // Mock travel time calculation
+      const travelTime = {
+        from_destination: from.dest_name || 'Unknown',
+        to_destination: to.dest_name || 'Unknown',
+        transport_mode: 'walking',
+        duration_minutes: Math.floor(Math.random() * 30) + 10, // 10-40 minutes mock
+        distance_meters: Math.floor(Math.random() * 2000) + 100, // 100-2100m mock
+        cost: 0
+      };
+      
+      travelTimes.push(travelTime);
+    }
+
+    res.json({ travel_times: travelTimes });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// GET /api/trips/:id/timezone-settings - Get timezone settings
+app.get('/api/trips/:id/timezone-settings', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    // Mock timezone data based on destination
+    const timezoneSettings = db.prepare('SELECT * FROM timezone_settings WHERE trip_id = ?').get(req.params.id);
+    if (!timezoneSettings) {
+      // Generate default timezone settings
+      const settings = {
+        home_timezone: 'Asia/Taipei',
+        destination_timezone: 'Asia/Tokyo',
+        timezone_offset_hours: 1, // Tokyo is 1 hour ahead of Taipei
+        created_at: new Date().toISOString()
+      };
+      
+      // Save to database
+      const settingsId = generateUUID();
+      db.prepare(`
+        INSERT INTO timezone_settings (id, trip_id, home_timezone, destination_timezone, timezone_offset_hours, created_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `).run(settingsId, req.params.id, settings.home_timezone, settings.destination_timezone, settings.timezone_offset_hours, settings.created_at);
+      
+      res.json(settings);
+    } else {
+      res.json(timezoneSettings);
+    }
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// PUT /api/trips/:id/timezone-settings - Update timezone settings
+app.put('/api/trips/:id/timezone-settings', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    const { home_timezone, destination_timezone } = req.body;
+
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    // Calculate timezone offset
+    const now = new Date();
+    const homeTime = new Date(now.toLocaleString("en-US", {timeZone: home_timezone}));
+    const destTime = new Date(now.toLocaleString("en-US", {timeZone: destination_timezone}));
+    const offsetHours = Math.round((destTime.getTime() - homeTime.getTime()) / (1000 * 60 * 60));
+
+    const existing = db.prepare('SELECT * FROM timezone_settings WHERE trip_id = ?').get(req.params.id);
+    const nowTime = new Date().toISOString();
+    
+    if (existing) {
+      db.prepare(`
+        UPDATE timezone_settings SET 
+          home_timezone = ?, 
+          destination_timezone = ?, 
+          timezone_offset_hours = ?, 
+          created_at = ?
+        WHERE trip_id = ?
+      `).run(home_timezone, destination_timezone, offsetHours, nowTime, req.params.id);
+    } else {
+      const settingsId = generateUUID();
+      db.prepare(`
+        INSERT INTO timezone_settings (id, trip_id, home_timezone, destination_timezone, timezone_offset_hours, created_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `).run(settingsId, req.params.id, home_timezone, destination_timezone, offsetHours, nowTime);
+    }
+
+    const settings = db.prepare('SELECT * FROM timezone_settings WHERE trip_id = ?').get(req.params.id);
+    res.json({
+      message: 'Timezone settings updated successfully',
+      timezone_settings: settings
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// GET /api/trips/:id/weather-alternatives - Get rainy day alternatives
+app.get('/api/trips/:id/weather-alternatives', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    const alternatives = db.prepare(`
+      SELECT wa.*, d.name as destination_name
+      FROM weather_alternatives wa
+      LEFT JOIN destinations d ON wa.destination_id = d.id
+      WHERE wa.trip_id = ?
+      ORDER BY wa.created_at DESC
+    `).all(req.params.id);
+
+    // Generate mock alternatives if none exist
+    if (alternatives.length === 0) {
+      const mockAlternatives = [
+        {
+          weather_condition: 'rain',
+          alternative_name: '室内博物館',
+          alternative_type: 'indoor',
+          notes: '適合雨天參觀，免費WiFi和空調'
+        },
+        {
+          weather_condition: 'rain',
+          alternative_name: '購物中心',
+          alternative_type: 'shopping',
+          notes: '逛街、用餐、娛樂一應俱全'
+        },
+        {
+          weather_condition: 'heavy_rain',
+          alternative_name: '咖啡廳體驗',
+          alternative_type: 'cafe',
+          notes: '品嘗當地特色咖啡，休息避雨'
+        }
+      ];
+
+      for (const alt of mockAlternatives) {
+        const altId = generateUUID();
+        db.prepare(`
+          INSERT INTO weather_alternatives (id, trip_id, weather_condition, alternative_name, alternative_type, notes, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
+        `).run(altId, req.params.id, alt.weather_condition, alt.alternative_name, alt.alternative_type, alt.notes, new Date().toISOString());
+      }
+
+      const newAlternatives = db.prepare(`
+        SELECT wa.*, d.name as destination_name
+        FROM weather_alternatives wa
+        LEFT JOIN destinations d ON wa.destination_id = d.id
+        WHERE wa.trip_id = ?
+        ORDER BY wa.created_at DESC
+      `).all(req.params.id);
+
+      res.json({ weather_alternatives: newAlternatives });
+    } else {
+      res.json({ weather_alternatives: alternatives });
+    }
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// Helper functions
+function generateDailySummary(timelineItems: any[]) {
+  const dailySummary: { [date: string]: any } = {};
+  
+  timelineItems.forEach(item => {
+    const date = item.start_time.split('T')[0];
+    if (!dailySummary[date]) {
+      dailySummary[date] = {
+        date,
+        total_duration: 0,
+        items_count: 0,
+        walking_distance: 0,
+        locked_items: 0
+      };
+    }
+    
+    dailySummary[date].total_duration += item.duration_minutes || 0;
+    dailySummary[date].items_count += 1;
+    dailySummary[date].walking_distance += item.walking_distance_meters || 0;
+    if (item.locked) dailySummary[date].locked_items += 1;
+  });
+  
+  return Object.values(dailySummary);
+}
+
+function generateSmartFillSuggestions(gapStart: string, gapMinutes: number, preferences: any) {
+  const suggestions = [];
+  const gapStartTime = new Date(gapStart);
+  const hour = gapStartTime.getHours();
+  
+  // Morning suggestions (6-12)
+  if (hour >= 6 && hour < 12) {
+    if (gapMinutes >= 30) {
+      suggestions.push({
+        name: '早餐咖啡',
+        type: 'meal',
+        duration_minutes: 30,
+        start_time: new Date(gapStartTime.getTime() + 10 * 60000).toISOString(),
+        end_time: new Date(gapStartTime.getTime() + 40 * 60000).toISOString()
+      });
+    }
+  }
+  
+  // Afternoon suggestions (12-17)
+  if (hour >= 12 && hour < 17) {
+    if (gapMinutes >= 45) {
+      suggestions.push({
+        name: '午休散步',
+        type: 'activity',
+        duration_minutes: 45,
+        start_time: new Date(gapStartTime.getTime() + 15 * 60000).toISOString(),
+        end_time: new Date(gapStartTime.getTime() + 60 * 60000).toISOString()
+      });
+    }
+  }
+  
+  // Evening suggestions (17-22)
+  if (hour >= 17 && hour < 22) {
+    if (gapMinutes >= 60) {
+      suggestions.push({
+        name: '晚餐時間',
+        type: 'meal',
+        duration_minutes: 60,
+        start_time: new Date(gapStartTime.getTime() + 20 * 60000).toISOString(),
+        end_time: new Date(gapStartTime.getTime() + 80 * 60000).toISOString()
+      });
+    }
+  }
+  
+  return suggestions.slice(0, 3); // Return top 3 suggestions
+}
+
+// Transportation Planning APIs (Module 3: F21-F30)
+
+// GET /api/trips/:id/transportation-modes - Get available transportation modes for a trip
+app.get('/api/trips/:id/transportation-modes', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+    
+    // Get user transportation preferences
+    const userPrefs = db.prepare('SELECT transport_preferences FROM users WHERE id = ?').get(user.id) as any;
+    const preferences = userPrefs?.transport_preferences ? JSON.parse(userPrefs.transport_preferences) : {};
+    
+    // Get existing transportation modes for this trip
+    const existingModes = db.prepare('SELECT * FROM transportation_modes WHERE trip_id = ?').all(req.params.id);
+    
+    // Default transportation modes based on preferences
+    const defaultModes = [
+      {
+        id: generateUUID(),
+        trip_id: req.params.id,
+        name: '步行',
+        type: 'walking',
+        cost_per_km: 0,
+        duration_factor: 1.0,
+        reliability_score: 0.9,
+        carbon_footprint_score: 0.1,
+        icon: '🚶',
+        description: '適合短距離移動，環保健康'
+      },
+      {
+        id: generateUUID(),
+        trip_id: req.params.id,
+        name: '大眾運輸',
+        type: 'public',
+        cost_per_km: 30,
+        duration_factor: 1.2,
+        reliability_score: 0.8,
+        carbon_footprint_score: 0.5,
+        icon: '🚌',
+        description: '經濟实惠，覆蓋範圍廣'
+      },
+      {
+        id: generateUUID(),
+        trip_id: req.params.id,
+        name: '計程車',
+        type: 'taxi',
+        cost_per_km: 200,
+        duration_factor: 0.8,
+        reliability_score: 0.95,
+        carbon_footprint_score: 0.8,
+        icon: '🚕',
+        description: '便捷舒適，點對點服務'
+      },
+      {
+        id: generateUUID(),
+        trip_id: req.params.id,
+        name: '自行車',
+        type: 'bike',
+        cost_per_km: 10,
+        duration_factor: 1.5,
+        reliability_score: 0.7,
+        carbon_footprint_score: 0.05,
+        icon: '🚲',
+        description: '環保健康，適合觀光'
+      }
+    ];
+    
+    // Filter and return modes based on preferences
+    let modes = existingModes.length > 0 ? existingModes : defaultModes;
+    
+    // Apply user preferences filtering
+    if (preferences.preferred_modes && preferences.preferred_modes.length > 0) {
+      modes = modes.filter((mode: any) => preferences.preferred_modes.includes(mode.type));
+    }
+    
+    res.json({ transportation_modes: modes });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// POST /api/trips/:id/transportation-modes - Add custom transportation mode
+app.post('/api/trips/:id/transportation-modes', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    const { name, type, cost_per_km = 0, duration_factor = 1.0, reliability_score = 1.0, carbon_footprint_score = 1.0, icon, description } = req.body;
+    
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+    
+    if (!name || !type) {
+      return res.status(400).json({ error: 'Name and type are required' });
+    }
+    
+    const modeId = generateUUID();
+    const now = new Date().toISOString();
+    
+    db.prepare(`
+      INSERT INTO transportation_modes (id, trip_id, name, type, cost_per_km, duration_factor, reliability_score, carbon_footprint_score, icon, description, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(modeId, req.params.id, name, type, cost_per_km, duration_factor, reliability_score, carbon_footprint_score, icon || '', description || '', now);
+    
+    const newMode = db.prepare('SELECT * FROM transportation_modes WHERE id = ?').get(modeId);
+    res.status(201).json({ 
+      message: 'Transportation mode added successfully',
+      transportation_mode: newMode 
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// POST /api/trips/:id/route-optimization - Optimize route using TSP algorithm
+app.post('/api/trips/:id/route-optimization', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    const { algorithm = 'nearest_neighbor', optimize_for = 'time', exclude_locked = true } = req.body;
+    
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+    
+    // Get destinations for this trip
+    const destinations = db.prepare('SELECT * FROM destinations WHERE trip_id = ? ORDER BY visit_date').all(req.params.id);
+    if (destinations.length < 2) {
+      return res.status(400).json({ error: 'At least 2 destinations required for route optimization' });
+    }
+    
+    // Filter out locked destinations if requested
+    let filteredDestinations = destinations;
+    if (exclude_locked) {
+      filteredDestinations = destinations.filter((dest: any) => !dest.locked);
+    }
+    
+    if (filteredDestinations.length < 2) {
+      return res.status(400).json({ error: 'At least 2 unlocked destinations required for route optimization' });
+    }
+    
+    // Get transportation modes
+    const transportationModes = db.prepare('SELECT * FROM transportation_modes WHERE trip_id = ?').all(req.params.id);
+    
+    // Calculate distances between all pairs of destinations
+    const distances = calculateDistances(filteredDestinations);
+    
+    // Apply TSP algorithm to find optimal order
+    const optimizedOrder = applyTSPAlgorithm(filteredDestinations, distances, algorithm, optimize_for);
+    
+    // Calculate total metrics for the optimized route
+    const totalMetrics = calculateRouteMetrics(optimizedOrder, distances, transportationModes);
+    
+    // Store the optimization result
+    const optimizationId = generateUUID();
+    const now = new Date().toISOString();
+    
+    db.prepare(`
+      INSERT INTO route_optimizations (id, trip_id, name, algorithm, total_duration_minutes, total_distance_meters, total_cost, optimized_route_order, waypoints, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      optimizationId,
+      req.params.id,
+      `${algorithm} optimization`,
+      algorithm,
+      totalMetrics.totalDuration,
+      totalMetrics.totalDistance,
+      totalMetrics.totalCost,
+      JSON.stringify(optimizedOrder.map(dest => dest.id)),
+      JSON.stringify(optimizedOrder.map(dest => ({ lat: dest.latitude, lng: dest.longitude }))),
+      now
+    );
+    
+    // Get transportation segments for the optimized route
+    const segments = generateTransportationSegments(optimizedOrder, distances, transportationModes);
+    
+    // Store segments in database
+    for (const segment of segments) {
+      const segmentId = generateUUID();
+      db.prepare(`
+        INSERT INTO transportation_segments (id, trip_id, from_destination_id, to_destination_id, transport_mode_id, duration_minutes, distance_meters, cost, instructions, departure_time, arrival_time, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        segmentId,
+        req.params.id,
+        segment.from_destination_id,
+        segment.to_destination_id,
+        segment.transport_mode_id,
+        segment.duration_minutes,
+        segment.distance_meters,
+        segment.cost,
+        JSON.stringify(segment.instructions || []),
+        segment.departure_time,
+        segment.arrival_time,
+        now
+      );
+    }
+    
+    res.status(201).json({
+      message: 'Route optimization completed successfully',
+      route_optimization: {
+        id: optimizationId,
+        algorithm,
+        optimize_for,
+        total_duration_minutes: totalMetrics.totalDuration,
+        total_distance_meters: totalMetrics.totalDistance,
+        total_cost: totalMetrics.totalCost,
+        optimized_route: optimizedOrder,
+        segments,
+        statistics: {
+          destinations_count: optimizedOrder.length,
+          segments_count: segments.length,
+          average_speed_kmh: totalMetrics.totalDistance / (totalMetrics.totalDuration / 60),
+          cost_per_km: totalMetrics.totalDistance > 0 ? totalMetrics.totalCost / (totalMetrics.totalDistance / 1000) : 0
+        }
+      }
+    });
+  } catch (error: any) {
+    console.error('Route optimization error:', error);
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// Helper function to calculate distances between destinations
+function calculateDistances(destinations: any[]) {
+  const distances: any = {};
+  
+  for (let i = 0; i < destinations.length; i++) {
+    for (let j = 0; j < destinations.length; j++) {
+      if (i !== j) {
+        const from = destinations[i];
+        const to = destinations[j];
+        
+        // Simple Euclidean distance calculation (in real app, use actual routing API)
+        const dx = (to.latitude || 0) - (from.latitude || 0);
+        const dy = (to.longitude || 0) - (from.longitude || 0);
+        const distance = Math.sqrt(dx * dx + dy * dy) * 1000; // Convert to meters
+        
+        distances[`${from.id}-${to.id}`] = {
+          from_destination_id: from.id,
+          to_destination_id: to.id,
+          distance_meters: Math.round(distance),
+          duration_minutes: Math.round(distance / 80) // Assuming average walking speed of 80m/min
+        };
+      }
+    }
+  }
+  
+  return distances;
+}
+
+// Helper function to apply TSP algorithm
+function applyTSPAlgorithm(destinations: any[], distances: any, algorithm: string, optimize_for: string) {
+  switch (algorithm) {
+    case 'nearest_neighbor':
+      return nearestNeighborTSP(destinations, distances, optimize_for);
+    case 'genetic':
+      return geneticAlgorithmTSP(destinations, distances, optimize_for);
+    default:
+      return nearestNeighborTSP(destinations, distances, optimize_for);
+  }
+}
+
+// Nearest Neighbor TSP implementation
+function nearestNeighborTSP(destinations: any[], distances: any, optimize_for: string) {
+  const n = destinations.length;
+  const visited = new Array(n).fill(false);
+  const route = [];
+  
+  // Start from the first destination
+  let current = 0;
+  route.push(destinations[current]);
+  visited[current] = true;
+  
+  // Visit all other destinations
+  for (let i = 1; i < n; i++) {
+    let nearest = -1;
+    let minDistance = Infinity;
+    
+    // Find the nearest unvisited destination
+    for (let j = 0; j < n; j++) {
+      if (!visited[j]) {
+        const distance = distances[`${destinations[current].id}-${destinations[j].id}`];
+        if (distance && distance.distance_meters < minDistance) {
+          minDistance = distance.distance_meters;
+          nearest = j;
+        }
+      }
+    }
+    
+    if (nearest !== -1) {
+      current = nearest;
+      route.push(destinations[current]);
+      visited[current] = true;
+    }
+  }
+  
+  return route;
+}
+
+// Simple Genetic Algorithm for TSP
+function geneticAlgorithmTSP(destinations: any[], distances: any, optimize_for: string) {
+  const populationSize = 50;
+  const generations = 100;
+  const mutationRate = 0.1;
+  
+  // Initialize population with random routes
+  const population = [];
+  for (let i = 0; i < populationSize; i++) {
+    const route = [...destinations];
+    for (let j = route.length - 1; j > 0; j--) {
+      const k = Math.floor(Math.random() * (j + 1));
+      [route[j], route[k]] = [route[k], route[j]];
+    }
+    population.push(route);
+  }
+  
+  // Evolve population
+  for (let gen = 0; gen < generations; gen++) {
+    // Calculate fitness for each individual
+    const fitness = population.map((route: any[]) => calculateRouteFitness(route, distances, optimize_for));
+    
+    // Selection (tournament selection)
+    const newPopulation = [];
+    for (let i = 0; i < populationSize; i++) {
+      const parent1 = tournamentSelection(population, fitness);
+      const parent2 = tournamentSelection(population, fitness);
+      
+      // Crossover (ordered crossover)
+      const child = orderedCrossover(parent1, parent2);
+      
+      // Mutation
+      if (Math.random() < mutationRate) {
+        mutate(child);
+      }
+      
+      newPopulation.push(child);
+    }
+    
+    population.splice(0, populationSize, ...newPopulation);
+  }
+  
+  // Return the best route
+  const finalFitness = population.map(route => calculateRouteFitness(route, distances, optimize_for));
+  const bestIndex = finalFitness.indexOf(Math.min(...finalFitness));
+  return population[bestIndex];
+}
+
+// Helper function for tournament selection
+function tournamentSelection(population: any[], fitness: number[], tournamentSize = 3) {
+  const tournament = [];
+  for (let i = 0; i < tournamentSize; i++) {
+    const index = Math.floor(Math.random() * population.length);
+    tournament.push({ individual: population[index], fitness: fitness[index] });
+  }
+  
+  tournament.sort((a: any, b: any) => a.fitness - b.fitness);
+  return tournament[0].individual;
+}
+
+// Ordered crossover for TSP
+function orderedCrossover(parent1: any[], parent2: any[]) {
+  const start = Math.floor(Math.random() * parent1.length);
+  const end = Math.floor(Math.random() * (parent1.length - start)) + start;
+  
+  const child = new Array(parent1.length).fill(null);
+  
+  // Copy segment from parent1
+  for (let i = start; i < end; i++) {
+    child[i] = parent1[i];
+  }
+  
+  // Fill remaining positions from parent2
+  let childIndex = 0;
+  for (let i = 0; i < parent2.length; i++) {
+    if (!child.includes(parent2[i])) {
+      while (child[childIndex] !== null) childIndex++;
+      child[childIndex] = parent2[i];
+    }
+  }
+  
+  return child;
+}
+
+// Mutation function for genetic algorithm
+function mutate(route: any[]) {
+  const i = Math.floor(Math.random() * route.length);
+  const j = Math.floor(Math.random() * route.length);
+  [route[i], route[j]] = [route[j], route[i]];
+}
+
+// Calculate route fitness (lower is better)
+function calculateRouteFitness(route: any[], distances: any, optimize_for: string) {
+  let totalDistance = 0;
+  let totalDuration = 0;
+  
+  for (let i = 0; i < route.length - 1; i++) {
+    const segment = distances[`${route[i].id}-${route[i + 1].id}`];
+    if (segment) {
+      totalDistance += segment.distance_meters;
+      totalDuration += segment.duration_minutes;
+    }
+  }
+  
+  switch (optimize_for) {
+    case 'time':
+      return totalDuration;
+    case 'distance':
+      return totalDistance;
+    case 'cost':
+      return totalDistance * 0.03; // Simple cost estimation
+    default:
+      return totalDuration;
+  }
+}
+
+// Calculate route metrics
+function calculateRouteMetrics(route: any[], distances: any, transportationModes: any[]) {
+  let totalDistance = 0;
+  let totalDuration = 0;
+  let totalCost = 0;
+  
+  for (let i = 0; i < (route as any[]).length - 1; i++) {
+    const segment = distances[`${(route as any[])[i].id}-${(route as any[])[i + 1].id}`];
+    if (segment) {
+      totalDistance += segment.distance_meters;
+      totalDuration += segment.duration_minutes;
+      totalCost += segment.distance_meters * 0.03; // Simple cost calculation
+    }
+  }
+  
+  return {
+    totalDistance,
+    totalDuration,
+    totalCost
+  };
+}
+
+// Generate transportation segments for optimized route
+function generateTransportationSegments(route: any[], distances: any[], transportationModes: any[]) {
+  const segments = [];
+  
+  for (let i = 0; i < (route as any[]).length - 1; i++) {
+    const from = (route as any[])[i];
+    const to = (route as any[])[i + 1];
+    const segment = (distances as any)[`${from.id}-${to.id}`];
+    
+    if (segment) {
+      // Select best transportation mode for this segment
+      const bestMode = selectBestTransportMode(segment as any, transportationModes);
+      
+      segments.push({
+        from_destination_id: from.id,
+        to_destination_id: to.id,
+        transport_mode_id: bestMode.id,
+        duration_minutes: segment.duration_minutes,
+        distance_meters: segment.distance_meters,
+        cost: segment.distance_meters * bestMode.cost_per_km / 1000,
+        instructions: generateInstructions(from, to, bestMode),
+        departure_time: null, // Would be calculated based on timeline
+        arrival_time: null
+      });
+    }
+  }
+  
+  return segments;
+}
+
+// Select best transportation mode for a segment
+function selectBestTransportMode(segment: any, transportationModes: any[]) {
+  // For now, prefer walking for short distances, public for medium, taxi for long
+  if (segment.distance_meters < 1000) {
+    return transportationModes.find(mode => mode.type === 'walking') || transportationModes[0];
+  } else if (segment.distance_meters < 5000) {
+    return transportationModes.find(mode => mode.type === 'public') || transportationModes[1];
+  } else {
+    return transportationModes.find(mode => mode.type === 'taxi') || transportationModes[2];
+  }
+}
+
+// Generate navigation instructions
+function generateInstructions(from: any, to: any, mode: any) {
+  const instructions = [];
+  
+  instructions.push({
+    step: 1,
+    instruction: `從${from.name}出發`,
+    distance: 0,
+    duration: 0
+  });
+  
+  if (mode.type === 'walking') {
+    instructions.push({
+      step: 2,
+      instruction: `步行前往${to.name}`,
+      distance: `${Math.round(to.distance_meters / 1000)}公里`,
+      duration: `${Math.round(to.duration_minutes)}分鐘`
+    });
+  } else if (mode.type === 'public') {
+    instructions.push({
+      step: 2,
+      instruction: `搭乘大眾運輸前往${to.name}`,
+      distance: `${Math.round(to.distance_meters / 1000)}公里`,
+      duration: `${Math.round(to.duration_minutes)}分鐘`
+    });
+  } else if (mode.type === 'taxi') {
+    instructions.push({
+      step: 2,
+      instruction: `搭乘計程車前往${to.name}`,
+      distance: `${Math.round(to.distance_meters / 1000)}公里`,
+      duration: `${Math.round(to.duration_minutes)}分鐘`
+    });
+  }
+  
+  instructions.push({
+    step: 3,
+    instruction: `抵達${to.name}`,
+    distance: 0,
+    duration: 0
+  });
+  
+  return instructions;
+}
+
+// Module 4: POI & Content APIs
+
+// Custom Map Pins (F31) - GET /api/trips/:id/custom-pins
+app.get('/api/trips/:id/custom-pins', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    const pins = db.prepare('SELECT * FROM custom_pins WHERE trip_id = ? ORDER BY created_at DESC').all(req.params.id);
+    res.json({ custom_pins: pins });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// Custom Map Pins (F31) - POST /api/trips/:id/custom-pins
+app.post('/api/trips/:id/custom-pins', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    const { name, type, latitude, longitude, address, description, icon, color, size } = req.body;
+
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    if (!name || !type || !latitude || !longitude) {
+      return res.status(400).json({ error: 'Name, type, latitude, and longitude are required' });
+    }
+
+    const pinId = generateUUID();
+    const now = new Date().toISOString();
+
+    db.prepare(`
+      INSERT INTO custom_pins (id, trip_id, name, type, latitude, longitude, address, description, icon, color, size, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      pinId,
+      req.params.id,
+      name,
+      type,
+      latitude,
+      longitude,
+      address || null,
+      description || null,
+      icon || '📍',
+      color || '#FF5733',
+      size || 20,
+      now,
+      now
+    );
+
+    const pin = db.prepare('SELECT * FROM custom_pins WHERE id = ?').get(pinId);
+    res.status(201).json({
+      message: 'Custom pin created successfully',
+      custom_pin: pin
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// Custom Map Pins (F31) - PUT /api/trips/:id/custom-pins/:pinId
+app.put('/api/trips/:id/custom-pins/:pinId', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    const { name, type, latitude, longitude, address, description, icon, color, size, is_visible } = req.body;
+
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    const existing = db.prepare('SELECT * FROM custom_pins WHERE id = ? AND trip_id = ?').get(req.params.pinId, req.params.id);
+    if (!existing) {
+      return res.status(404).json({ error: 'Custom pin not found' });
+    }
+
+    const now = new Date().toISOString();
+    db.prepare(`
+      UPDATE custom_pins SET 
+        name = COALESCE(?, name),
+        type = COALESCE(?, type),
+        latitude = COALESCE(?, latitude),
+        longitude = COALESCE(?, longitude),
+        address = COALESCE(?, address),
+        description = COALESCE(?, description),
+        icon = COALESCE(?, icon),
+        color = COALESCE(?, color),
+        size = COALESCE(?, size),
+        is_visible = COALESCE(?, is_visible),
+        updated_at = ?
+      WHERE id = ? AND trip_id = ?
+    `).run(
+      name,
+      type,
+      latitude,
+      longitude,
+      address,
+      description,
+      icon,
+      color,
+      size,
+      is_visible,
+      now,
+      req.params.pinId,
+      req.params.id
+    );
+
+    const updatedPin = db.prepare('SELECT * FROM custom_pins WHERE id = ?').get(req.params.pinId);
+    res.json({
+      message: 'Custom pin updated successfully',
+      custom_pin: updatedPin
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// Custom Map Pins (F31) - DELETE /api/trips/:id/custom-pins/:pinId
+app.delete('/api/trips/:id/custom-pins/:pinId', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    const existing = db.prepare('SELECT * FROM custom_pins WHERE id = ? AND trip_id = ?').get(req.params.pinId, req.params.id);
+    if (!existing) {
+      return res.status(404).json({ error: 'Custom pin not found' });
+    }
+
+    // Delete related tag assignments, reviews, and names
+    db.prepare('DELETE FROM poi_tag_assignments WHERE custom_pin_id = ?').run(req.params.pinId);
+    db.prepare('DELETE FROM poi_reviews WHERE custom_pin_id = ?').run(req.params.pinId);
+    db.prepare('DELETE FROM poi_names WHERE custom_pin_id = ?').run(req.params.pinId);
+    db.prepare('DELETE FROM seasonal_alerts WHERE custom_pin_id = ?').run(req.params.pinId);
+    
+    db.prepare('DELETE FROM custom_pins WHERE id = ?').run(req.params.pinId);
+
+    res.json({ message: 'Custom pin deleted successfully' });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// Multi-dimensional Tags (F33) - GET /api/poi-tags
+app.get('/api/poi-tags', (req, res) => {
+  try {
+    const db = getDatabase();
+    const tags = db.prepare('SELECT * FROM poi_tags ORDER BY category, name').all();
+    res.json({ poi_tags: tags });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// Multi-dimensional Tags (F33) - GET /api/trips/:id/poi-tags
+app.get('/api/trips/:id/poi-tags', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    const tags = db.prepare(`
+      SELECT pt.*, pta.custom_pin_id, pta.destination_id
+      FROM poi_tags pt
+      LEFT JOIN poi_tag_assignments pta ON pt.id = pta.tag_id AND pta.trip_id = ?
+      WHERE pta.id IS NOT NULL OR pt.category IN ('cuisine', 'price_range', 'facility')
+      ORDER BY pt.category, pt.name
+    `).all(req.params.id);
+
+    res.json({ poi_tags: tags });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// Multi-dimensional Tags (F33) - POST /api/trips/:id/poi-tags/assign
+app.post('/api/trips/:id/poi-tags/assign', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    const { tag_id, custom_pin_id, destination_id } = req.body;
+
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    if (!tag_id) {
+      return res.status(400).json({ error: 'Tag ID is required' });
+    }
+
+    const tag = db.prepare('SELECT * FROM poi_tags WHERE id = ?').get(tag_id);
+    if (!tag) {
+      return res.status(404).json({ error: 'Tag not found' });
+    }
+
+    // Check if assignment already exists
+    const existing = db.prepare('SELECT * FROM poi_tag_assignments WHERE trip_id = ? AND tag_id = ? AND custom_pin_id = ? AND destination_id = ?').get(
+      req.params.id, tag_id, custom_pin_id || null, destination_id || null
+    );
+
+    if (existing) {
+      return res.status(409).json({ error: 'Tag assignment already exists' });
+    }
+
+    const assignmentId = generateUUID();
+    const now = new Date().toISOString();
+
+    db.prepare(`
+      INSERT INTO poi_tag_assignments (id, trip_id, tag_id, custom_pin_id, destination_id, created_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(assignmentId, req.params.id, tag_id, custom_pin_id, destination_id, now);
+
+    const tagData = tag as any;
+    const assignment = db.prepare('SELECT * FROM poi_tag_assignments WHERE id = ?').get(assignmentId) as any;
+    res.status(201).json({
+      message: 'Tag assigned successfully',
+      tag_assignment: {
+        id: assignment.id,
+        tag_id: assignment.tag_id,
+        tag_name: tagData.name,
+        tag_category: tagData.category,
+        custom_pin_id: assignment.custom_pin_id,
+        destination_id: assignment.destination_id,
+        created_at: assignment.created_at
+      }
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// Multi-dimensional Tags (F33) - DELETE /api/trips/:id/poi-tags/assignment/:assignmentId
+app.delete('/api/trips/:id/poi-tags/assignment/:assignmentId', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    const assignment = db.prepare('SELECT * FROM poi_tag_assignments WHERE id = ? AND trip_id = ?').get(req.params.assignmentId, req.params.id);
+    if (!assignment) {
+      return res.status(404).json({ error: 'Tag assignment not found' });
+    }
+
+    db.prepare('DELETE FROM poi_tag_assignments WHERE id = ?').run(req.params.assignmentId);
+
+    res.json({ message: 'Tag assignment removed successfully' });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// POI Reviews and Notes (F35) - GET /api/trips/:id/poi-reviews
+app.get('/api/trips/:id/poi-reviews', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    const reviews = db.prepare(`
+      SELECT pr.*, u.name as user_name, cp.name as pin_name, cp.type as pin_type, d.name as dest_name
+      FROM poi_reviews pr
+      LEFT JOIN users u ON pr.user_id = u.id
+      LEFT JOIN custom_pins cp ON pr.custom_pin_id = cp.id
+      LEFT JOIN destinations d ON pr.destination_id = d.id
+      WHERE pr.trip_id = ?
+      ORDER BY pr.created_at DESC
+    `).all(req.params.id);
+
+    res.json({ poi_reviews: reviews });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// POI Reviews and Notes (F35) - POST /api/trips/:id/poi-reviews
+app.post('/api/trips/:id/poi-reviews', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    const { custom_pin_id, destination_id, rating, title, content, visit_date, photos } = req.body;
+
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    if (!rating || rating < 1 || rating > 5) {
+      return res.status(400).json({ error: 'Rating must be between 1 and 5' });
+    }
+
+    const reviewId = generateUUID();
+    const now = new Date().toISOString();
+
+    db.prepare(`
+      INSERT INTO poi_reviews (id, trip_id, custom_pin_id, destination_id, user_id, rating, title, content, visit_date, photos, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      reviewId,
+      req.params.id,
+      custom_pin_id,
+      destination_id,
+      user.id,
+      rating,
+      title || null,
+      content || null,
+      visit_date || null,
+      photos ? JSON.stringify(photos) : null,
+      now,
+      now
+    );
+
+    const review = db.prepare('SELECT * FROM poi_reviews WHERE id = ?').get(reviewId) as any;
+    res.status(201).json({
+      message: 'POI review created successfully',
+      poi_review: review
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// Bilingual POI Names (F38) - GET /api/trips/:id/poi-names
+app.get('/api/trips/:id/poi-names', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    const names = db.prepare(`
+      SELECT pn.*, cp.name as original_name, cp.type as pin_type, d.name as dest_name
+      FROM poi_names pn
+      LEFT JOIN custom_pins cp ON pn.custom_pin_id = cp.id
+      LEFT JOIN destinations d ON pn.destination_id = d.id
+      WHERE cp.trip_id = ? OR d.trip_id = ?
+      ORDER BY pn.language, pn.local_name
+    `).all(req.params.id, req.params.id);
+
+    res.json({ poi_names: names });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// Seasonal Alerts (F39) - GET /api/trips/:id/seasonal-alerts
+app.get('/api/trips/:id/seasonal-alerts', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    const alerts = db.prepare(`
+      SELECT sa.*, cp.name as pin_name, cp.type as pin_type, d.name as dest_name
+      FROM seasonal_alerts sa
+      LEFT JOIN custom_pins cp ON sa.custom_pin_id = cp.id
+      LEFT JOIN destinations d ON sa.destination_id = d.id
+      WHERE sa.trip_id = ? AND sa.is_active = TRUE
+      ORDER BY sa.season, sa.start_date
+    `).all(req.params.id);
+
+    res.json({ seasonal_alerts: alerts });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// Error handling middleware
+process.on('SIGINT', () => {
+  console.log('\n🛑 Received SIGINT, shutting down gracefully...');
+  // TODO: Close database connection
+  process.exit(0);
+});
+
+process.on('SIGTERM', () => {
+  console.log('\n🛑 Received SIGTERM, shutting down gracefully...');
+  // TODO: Close database connection
+  process.exit(0);
+});
+
+// Module 3: Japanese Transport Ticket Calculator APIs (F23)
+
+// GET /api/trips/:id/japan-tickets - Get available Japanese transport tickets
+app.get('/api/trips/:id/japan-tickets', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+    
+    const tickets = db.prepare('SELECT * FROM japan_transport_tickets WHERE trip_id = ? AND is_active = TRUE').all(req.params.id);
+    
+    // Format response
+    const formattedTickets = tickets.map((ticket: any) => ({
+      ...ticket,
+      coverage_areas: JSON.parse(ticket.coverage_areas || '[]'),
+      conditions: JSON.parse(ticket.conditions || '{}')
+    }));
+    
+    res.json({ japan_transport_tickets: formattedTickets });
+  } catch (error: any) {
+    console.error('Get Japan tickets error:', error);
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// POST /api/trips/:id/japan-tickets/calculate - Calculate ticket cost and recommendations
+app.post('/api/trips/:id/japan-tickets/calculate', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    const { planned_trips, ticket_id } = req.body;
+    
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+    
+    // Get the ticket
+    const ticket = db.prepare('SELECT * FROM japan_transport_tickets WHERE id = ? AND trip_id = ?').get(ticket_id, req.params.id);
+    if (!ticket) {
+      return res.status(404).json({ error: 'Ticket not found' });
+    }
+    
+    // Parse ticket details
+    const ticketDetails: any = {
+      id: (ticket as any).id,
+      name: (ticket as any).name,
+      type: (ticket as any).type,
+      price: (ticket as any).price,
+      validity_days: (ticket as any).validity_days,
+      coverage_areas: JSON.parse((ticket as any).coverage_areas || '[]'),
+      conditions: JSON.parse((ticket as any).conditions || '{}')
+    };
+    
+    // Calculate costs based on planned trips
+    const calculationResults = calculateJapanTicketCost(ticketDetails, planned_trips);
+    
+    // Save calculation record
+    const calculationId = generateUUID();
+    db.prepare(`
+      INSERT INTO japan_ticket_calculations 
+      (id, trip_id, ticket_id, planned_trips, calculated_cost_yen, alternative_ticket_suggestions, savings_yen, breakeven_analysis, recommendation)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      calculationId,
+      req.params.id,
+      ticket_id,
+      JSON.stringify(planned_trips),
+      calculationResults.calculated_cost_yen,
+      JSON.stringify(calculationResults.alternative_ticket_suggestions),
+      calculationResults.savings_yen,
+      JSON.stringify(calculationResults.breakeven_analysis),
+      calculationResults.recommendation
+    );
+    
+    res.json({
+      message: 'Ticket calculation completed successfully',
+      calculation_id: calculationId,
+      ...calculationResults
+    });
+  } catch (error: any) {
+    console.error('Japan ticket calculation error:', error);
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// Function to calculate Japan ticket cost and recommendations
+function calculateJapanTicketCost(ticket: any, planned_trips: any[]) {
+  // Mock calculation logic for Japanese transport tickets
+  const individual_trip_costs = planned_trips.map((trip: any) => {
+    // Base cost calculation (simplified)
+    let base_cost = 0;
+    
+    switch (trip.transport_mode) {
+      case 'shinkansen':
+        base_cost = 14000; // Average Shinkansen cost
+        break;
+      case 'train':
+        base_cost = 500; // Average train cost
+        break;
+      case 'subway':
+        base_cost = 200; // Average subway cost
+        break;
+      case 'bus':
+        base_cost = 300; // Average bus cost
+        break;
+      default:
+        base_cost = 400; // Default cost
+    }
+    
+    // Apply distance multiplier
+    const distance_multiplier = trip.distance_km > 0 ? Math.max(1, trip.distance_km / 10) : 1;
+    
+    return Math.round(base_cost * distance_multiplier);
+  });
+  
+  const total_individual_cost = individual_trip_costs.reduce((sum: number, cost: number) => sum + cost, 0);
+  const ticket_cost = ticket.price_yen;
+  
+  const savings_yen = Math.max(0, total_individual_cost - ticket_cost);
+  const breakeven_analysis = {
+    individual_total_cost: total_individual_cost,
+    ticket_cost,
+    savings_yen,
+    breakeven_point: total_individual_cost - ticket_cost >= 0,
+    cost_ratio: ticket_cost / total_individual_cost,
+    payback_trips: Math.ceil(ticket_cost / (total_individual_cost / planned_trips.length))
+  };
+  
+  // Generate alternative suggestions
+  const alternative_ticket_suggestions = [
+    {
+      ticket_name: 'IC Card (Suica/Pasmo)',
+      estimated_savings: Math.round(total_individual_cost * 0.1), // 10% savings
+      description: '適合短距離頻繁搭乘'
+    },
+    {
+      ticket_name: 'Regional Pass',
+      estimated_savings: Math.round(total_individual_cost * 0.15), // 15% savings
+      description: '適合特定地區長期旅行'
+    }
+  ];
+  
+  let recommendation = '';
+  if (breakeven_analysis.breakeven_point && savings_yen > 1000) {
+    recommendation = `推薦使用${ticket.ticket_name}，可節省${savings_yen}日圓`;
+  } else if (breakeven_analysis.breakeven_point) {
+    recommendation = `${ticket.ticket_name}剛好達到成本效益平衡`;
+  } else {
+    recommendation = `建議考慮其他交通方案，${ticket.ticket_name}可能不划算`;
+  }
+  
+  return {
+    calculated_cost_yen: ticket_cost,
+    total_individual_cost,
+    alternative_ticket_suggestions,
+    savings_yen,
+    breakeven_analysis,
+    recommendation
+  };
+}
+
+// POST /api/trips/:id/japan-tickets/:ticket_id/record-usage - Record ticket usage
+app.post('/api/trips/:id/japan-tickets/:ticket_id/record-usage', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    const { from_location, to_location, transport_mode, distance_km, cost_yen } = req.body;
+    
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+    
+    const ticket = db.prepare('SELECT * FROM japan_transport_tickets WHERE id = ? AND trip_id = ?').get(req.params.ticket_id, req.params.id);
+    if (!ticket) {
+      return res.status(404).json({ error: 'Ticket not found' });
+    }
+    
+    const usageId = generateUUID();
+    db.prepare(`
+      INSERT INTO japan_ticket_usage_records 
+      (id, ticket_id, trip_id, used_date, from_location, to_location, transport_mode, distance_km, cost_yen, is_valid)
+      VALUES (?, ?, ?, datetime('now'), ?, ?, ?, ?, ?, ?)
+    `).run(
+      usageId,
+      req.params.ticket_id,
+      req.params.id,
+      from_location,
+      to_location,
+      transport_mode,
+      distance_km || 0,
+      cost_yen || 0,
+      true
+    );
+    
+    res.status(201).json({
+      message: 'Ticket usage recorded successfully',
+      usage_record: { id: usageId, ...req.body }
+    });
+  } catch (error: any) {
+    console.error('Record ticket usage error:', error);
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// GET /api/trips/:id/japan-tickets/:ticket_id/usage-history - Get ticket usage history
+app.get('/api/trips/:id/japan-tickets/:ticket_id/usage-history', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+    
+    const usageRecords = db.prepare(`
+      SELECT * FROM japan_ticket_usage_records 
+      WHERE ticket_id = ? AND trip_id = ? 
+      ORDER BY used_date DESC
+    `).all(req.params.ticket_id, req.params.id);
+    
+    const formattedRecords = usageRecords.map((record: any) => ({
+      ...record,
+      used_date: new Date(record.used_date).toISOString()
+    }));
+    
+    res.json({ usage_history: formattedRecords });
+  } catch (error: any) {
+    console.error('Get ticket usage history error:', error);
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// Module 4: Additional POI & Content APIs
+
+// F32 - Crowd prediction heatmap - GET /api/trips/:id/crowd-prediction
+app.get('/api/trips/:id/crowd-prediction', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    // Get all custom pins and destinations for crowd prediction
+    const pins = db.prepare('SELECT * FROM custom_pins WHERE trip_id = ?').all(req.params.id);
+    const destinations = db.prepare('SELECT * FROM destinations WHERE trip_id = ?').all(req.params.id);
+    
+    // Simulate crowd prediction data based on time of day and day of week
+    const now = new Date();
+    const hour = now.getHours();
+    const dayOfWeek = now.getDay();
+    
+    const crowdData: any[] = [];
+    
+    // Process pins
+    pins.forEach((pin: any) => {
+      const crowdLevel = Math.floor(Math.random() * 100); // Simulated crowd level 0-100
+      const crowdStatus = crowdLevel < 30 ? 'low' : crowdLevel < 70 ? 'medium' : 'high';
+      
+      crowdData.push({
+        id: pin.id,
+        name: pin.name,
+        type: pin.type,
+        latitude: pin.latitude,
+        longitude: pin.longitude,
+        crowd_level: crowdLevel,
+        crowd_status: crowdStatus,
+        estimated_wait_time: Math.floor(crowdLevel / 20), // Simulated wait time in minutes
+        time_factor: hour >= 10 && hour <= 18 ? 1.2 : 0.8, // Higher crowds during day time
+        day_factor: dayOfWeek === 0 || dayOfWeek === 6 ? 1.3 : 1.0, // Higher crowds on weekends
+        last_updated: now.toISOString()
+      });
+    });
+    
+    // Process destinations
+    destinations.forEach((dest: any) => {
+      const crowdLevel = Math.floor(Math.random() * 100);
+      const crowdStatus = crowdLevel < 30 ? 'low' : crowdLevel < 70 ? 'medium' : 'high';
+      
+      crowdData.push({
+        id: dest.id,
+        name: dest.name,
+        type: dest.type,
+        latitude: dest.latitude,
+        longitude: dest.longitude,
+        crowd_level: crowdLevel,
+        crowd_status: crowdStatus,
+        estimated_wait_time: Math.floor(crowdLevel / 15),
+        time_factor: hour >= 9 && hour <= 17 ? 1.3 : 0.9,
+        day_factor: dayOfWeek === 0 || dayOfWeek === 6 ? 1.4 : 1.0,
+        last_updated: now.toISOString()
+      });
+    });
+
+    res.json({ 
+      crowd_prediction: crowdData,
+      metadata: {
+        generated_at: now.toISOString(),
+        data_points: crowdData.length,
+        peak_hours: [11, 12, 13, 14, 15],
+        peak_days: [0, 6] // Sunday, Saturday
+      }
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// F34 - POI surrounding facilities search - GET /api/trips/:id/poi-facilities
+app.get('/api/trips/:id/poi-facilities', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    // Get custom pins and destinations to search around
+    const customPins = db.prepare('SELECT * FROM custom_pins WHERE trip_id = ?').all(req.params.id);
+    const destinations = db.prepare('SELECT * FROM destinations WHERE trip_id = ?').all(req.params.id);
+    
+    // Simulated nearby facilities database
+    const facilityCategories = [
+      { type: 'restroom', icon: '🚻', name: '洗手間', priority: 1 },
+      { type: 'atm', icon: '🏦', name: 'ATM', priority: 2 },
+      { type: 'pharmacy', icon: '💊', name: '藥局', priority: 1 },
+      { type: 'convenience', icon: '🏪', name: '便利商店', priority: 3 },
+      { type: 'restaurant', icon: '🍽️', name: '餐廳', priority: 2 },
+      { type: 'parking', icon: '🅿️', name: '停車場', priority: 3 },
+      { type: 'hospital', icon: '🏥', name: '醫院', priority: 1 },
+      { type: 'police', icon: '👮', name: '警察局', priority: 1 }
+    ];
+
+    const allFacilities: any[] = [];
+    
+    // Generate facilities around each POI
+    [...customPins, ...destinations].forEach((poi: any) => {
+      facilityCategories.forEach(category => {
+        // Generate facilities within 500-2000m radius
+        const distance = Math.floor(Math.random() * 1500) + 500;
+        const duration = Math.floor(distance / 80); // Walking speed ~80m/min
+        
+        allFacilities.push({
+          id: generateUUID(),
+          poi_id: poi.id,
+          poi_name: poi.name,
+          poi_type: poi.type,
+          facility_type: category.type,
+          facility_name: category.name,
+          icon: category.icon,
+          distance: distance,
+          duration: duration,
+          walking_time: `${duration}分鐘`,
+          address: `附近${category.name} - 模擬地址`,
+          rating: (Math.random() * 2 + 3).toFixed(1), // 3.0-5.0 rating
+          is_available: Math.random() > 0.1, // 90% available
+          operating_hours: category.type === 'convenience' ? '24小時' : '08:00-22:00',
+          created_at: new Date().toISOString()
+        });
+      });
+    });
+
+    // Sort by distance and group by facility type
+    const sortedFacilities = allFacilities.sort((a, b) => a.distance - b.distance);
+    const groupedFacilities = facilityCategories.map(category => ({
+      category: category,
+      facilities: sortedFacilities.filter(f => f.facility_type === category.type).slice(0, 5) // Top 5 per category
+    }));
+
+    res.json({ 
+      poi_facilities: groupedFacilities,
+      total_facilities: sortedFacilities.length,
+      search_radius: 2000
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// F36 - Nearby search for restaurants/amenities - GET /api/trips/:id/nearby-search
+app.get('/api/trips/:id/nearby-search', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    const { 
+      lat, 
+      lng, 
+      radius = 1000, 
+      type = 'all', 
+      price_range = null,
+      cuisine_type = null 
+    } = req.query;
+
+    if (!lat || !lng) {
+      return res.status(400).json({ error: 'Latitude and longitude are required' });
+    }
+
+    // Get current trip locations
+    const customPins = db.prepare('SELECT * FROM custom_pins WHERE trip_id = ?').all(req.params.id);
+    const destinations = db.prepare('SELECT * FROM destinations WHERE trip_id = ?').all(req.params.id);
+
+    // Simulated restaurant and amenity database
+    const mockData = [
+      // Restaurants
+      { name: '拉麵一福', type: 'restaurant', cuisine: 'japanese', price_range: 2, rating: 4.5, distance: 150 },
+      { name: '四川飯店', type: 'restaurant', cuisine: 'chinese', price_range: 1, rating: 4.2, distance: 300 },
+      { name: '韓式烤肉', type: 'restaurant', cuisine: 'korean', price_range: 3, rating: 4.7, distance: 450 },
+      { name: '咖啡廳', type: 'cafe', cuisine: 'cafe', price_range: 2, rating: 4.3, distance: 200 },
+      { name: '精緻餐廳', type: 'restaurant', cuisine: 'western', price_range: 4, rating: 4.8, distance: 600 },
+      
+      // Amenities
+      { name: '7-Eleven', type: 'convenience', price_range: 0, rating: 4.0, distance: 180 },
+      { name: '藥局', type: 'pharmacy', price_range: 0, rating: 4.1, distance: 350 },
+      { name: 'ATM', type: 'atm', price_range: 0, rating: 5.0, distance: 120 },
+      { name: '停車場', type: 'parking', price_range: 1, rating: 3.8, distance: 400 },
+      { name: '觀景台', type: 'attraction', price_range: 0, rating: 4.6, distance: 800 },
+      
+      // More facilities
+      { name: '警察局', type: 'police', price_range: 0, rating: 5.0, distance: 500 },
+      { name: '醫院', type: 'hospital', price_range: 0, rating: 4.4, distance: 700 },
+      { name: '書店', type: 'shopping', price_range: 2, rating: 4.2, distance: 550 },
+      { name: '健身房', type: 'fitness', price_range: 4, rating: 4.5, distance: 900 },
+      { name: '加油站', type: 'gas_station', price_range: 2, rating: 3.9, distance: 1100 }
+    ];
+
+    // Filter and sort results
+    let filteredResults = mockData.filter(item => {
+      // Distance filter
+      const distance = parseFloat(item.distance.toString());
+      if (distance > parseFloat(radius.toString())) return false;
+      
+      // Type filter
+      if (type !== 'all' && item.type !== type) return false;
+      
+      // Price range filter
+      if (price_range && item.price_range !== parseInt(price_range.toString())) return false;
+      
+      // Cuisine filter
+      if (cuisine_type && item.cuisine !== cuisine_type) return false;
+      
+      return true;
+    });
+
+    // Sort by distance and rating
+    filteredResults.sort((a, b) => {
+      if (a.distance !== b.distance) {
+        return a.distance - b.distance;
+      }
+      return parseFloat(b.rating.toString()) - parseFloat(a.rating.toString());
+    });
+
+    // Group by type
+    const groupedResults = {
+      restaurants: filteredResults.filter(item => item.type === 'restaurant'),
+      cafes: filteredResults.filter(item => item.type === 'cafe'),
+      convenience: filteredResults.filter(item => item.type === 'convenience'),
+      amenities: filteredResults.filter(item => ['pharmacy', 'atm', 'parking', 'police', 'hospital'].includes(item.type)),
+      attractions: filteredResults.filter(item => item.type === 'attraction'),
+      services: filteredResults.filter(item => ['shopping', 'fitness', 'gas_station'].includes(item.type))
+    };
+
+    res.json({ 
+      nearby_results: groupedResults,
+      search_metadata: {
+        center_lat: parseFloat(lat.toString()),
+        center_lng: parseFloat(lng.toString()),
+        search_radius_meters: parseInt(radius.toString()),
+        total_results: filteredResults.length,
+        search_filters: {
+          type: type,
+          price_range: price_range,
+          cuisine_type: cuisine_type
+        }
+      }
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// F37 - Real-time experience booking API - POST /api/trips/:id/experience-bookings
+app.post('/api/trips/:id/experience-bookings', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    const { 
+      experience_id, 
+      experience_name, 
+      experience_type, 
+      provider_name, 
+      date, 
+      start_time, 
+      end_time, 
+      participants, 
+      price_per_person, 
+      total_price, 
+      special_requirements,
+      booking_reference 
+    } = req.body;
+
+    if (!experience_id || !experience_name || !date || !start_time) {
+      return res.status(400).json({ 
+        error: 'Experience ID, name, date, and start time are required' 
+      });
+    }
+
+    // Generate booking reference if not provided
+    const finalBookingRef = booking_reference || `ZV-${generateUUID().substring(0, 8).toUpperCase()}`;
+    
+    // Check for availability (simulated)
+    const existingBooking = db.prepare(`
+      SELECT COUNT(*) as count FROM experience_bookings 
+      WHERE experience_id = ? AND date = ? AND ((start_time <= ? AND end_time > ?) OR (start_time < ? AND end_time >= ?))
+    `).get(experience_id, date, start_time, start_time, end_time, end_time);
+    
+    if ((existingBooking as any).count > 0) {
+      return res.status(409).json({ 
+        error: 'This time slot is already booked. Please choose a different time.',
+        available_slots: [
+          { date: date, start_time: '09:00', end_time: '11:00' },
+          { date: date, start_time: '14:00', end_time: '16:00' },
+          { date: date, start_time: '17:00', end_time: '19:00' }
+        ]
+      });
+    }
+
+    // Create booking
+    const bookingId = generateUUID();
+    const now = new Date().toISOString();
+
+    const stmt = db.prepare(`
+      INSERT INTO experience_bookings (
+        id, trip_id, user_id, experience_id, experience_name, experience_type, 
+        provider_name, date, start_time, end_time, participants, price_per_person, 
+        total_price, special_requirements, booking_reference, status, created_at, updated_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'confirmed', ?, ?)
+    `);
+
+    stmt.run(
+      bookingId,
+      req.params.id,
+      user.id,
+      experience_id,
+      experience_name,
+      experience_type,
+      provider_name,
+      date,
+      start_time,
+      end_time,
+      participants || 1,
+      price_per_person,
+      total_price,
+      special_requirements ? JSON.stringify(special_requirements) : null,
+      finalBookingRef,
+      now,
+      now
+    );
+
+    // Get created booking
+    const booking = db.prepare(`
+      SELECT eb.*, u.name as user_name
+      FROM experience_bookings eb
+      LEFT JOIN users u ON eb.user_id = u.id
+      WHERE eb.id = ?
+    `).get(bookingId) as any;
+
+    // Send confirmation (simulated)
+    const confirmation = {
+      booking_id: bookingId,
+      booking_reference: finalBookingRef,
+      experience_name: experience_name,
+      date: date,
+      time: `${start_time} - ${end_time}`,
+      participants: participants || 1,
+      total_price: total_price,
+      status: 'confirmed',
+      confirmation_code: generateUUID().substring(0, 6).toUpperCase(),
+      cancellation_policy: 'Free cancellation up to 24 hours before the experience',
+      contact_info: {
+        provider_email: 'support@zenvoyage.app',
+        provider_phone: '+886-912-345-678'
+      },
+      next_steps: [
+        'Check your email for detailed confirmation',
+        'Prepare identification for check-in',
+        'Arrive 15 minutes early for check-in',
+        'Contact support with any questions'
+      ]
+    };
+
+    res.status(201).json({
+      message: 'Experience booking confirmed successfully',
+      booking: booking,
+      confirmation: confirmation
+    });
+
+  } catch (error: any) {
+    console.error('Experience booking error:', error);
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// F37 - Get experience bookings - GET /api/trips/:id/experience-bookings
+app.get('/api/trips/:id/experience-bookings', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    const bookings = db.prepare(`
+      SELECT eb.*, u.name as user_name
+      FROM experience_bookings eb
+      LEFT JOIN users u ON eb.user_id = u.id
+      WHERE eb.trip_id = ?
+      ORDER BY eb.date DESC, eb.start_time DESC
+    `).all(req.params.id);
+
+    res.json({ experience_bookings: bookings });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// F37 - Cancel experience booking - DELETE /api/trips/:id/experience-bookings/:bookingId
+app.delete('/api/trips/:id/experience-bookings/:bookingId', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    const booking = db.prepare(`
+      SELECT * FROM experience_bookings 
+      WHERE id = ? AND trip_id = ? AND user_id = ?
+    `).get(req.params.bookingId, req.params.id, user.id);
+    
+    if (!booking) {
+      return res.status(404).json({ error: 'Booking not found' });
+    }
+
+    // Check cancellation policy (24 hours before)
+    const bookingDate = new Date((booking as any).date + 'T' + (booking as any).start_time);
+    const now = new Date();
+    const timeDiff = bookingDate.getTime() - now.getTime();
+    const hoursDiff = timeDiff / (1000 * 3600);
+
+    if (hoursDiff < 24) {
+      return res.status(400).json({ 
+        error: 'Cannot cancel within 24 hours of the experience',
+        cancellation_deadline: new Date(now.getTime() + 24 * 60 * 60 * 1000).toISOString()
+      });
+    }
+
+    // Cancel booking
+    db.prepare('DELETE FROM experience_bookings WHERE id = ?').run(req.params.bookingId);
+
+    res.json({ 
+      message: 'Experience booking cancelled successfully',
+      cancelled_booking: booking,
+      refund_info: {
+        refund_amount: (booking as any).total_price,
+        refund_method: 'Original payment method',
+        processing_time: '5-7 business days'
+      }
+    });
+
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// Module 5: In-Trip Execution APIs (F40-F46)
+
+// F40: 一鍵跳轉地圖導航 - Get map navigation data
+app.get('/api/trips/:id/navigation', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    // Get timeline items and destinations for navigation
+    const timelineItems = db.prepare(`
+      SELECT ti.*, 
+             d.name as dest_name,
+             d.latitude,
+             d.longitude,
+             d.address
+      FROM timeline_items ti
+      LEFT JOIN destinations d ON ti.destination_id = d.id
+      WHERE ti.trip_id = ?
+      ORDER BY ti.order_index
+    `).all(req.params.id);
+
+    const customPins = db.prepare('SELECT * FROM custom_pins WHERE trip_id = ?').all(req.params.id);
+    const destinations = db.prepare('SELECT * FROM destinations WHERE trip_id = ?').all(req.params.id);
+
+    // Generate navigation waypoints
+    const waypoints = [];
+    
+    // Add current location (mock)
+    waypoints.push({
+      id: 'current',
+      name: '當前位置',
+      latitude: 35.6762,
+      longitude: 139.6503,
+      type: 'current_location',
+      is_current: true
+    });
+
+    // Add timeline items as waypoints
+    timelineItems.forEach((item: any) => {
+      if (item.latitude && item.longitude) {
+        waypoints.push({
+          id: item.id,
+          name: item.name || item.dest_name,
+          latitude: item.latitude,
+          longitude: item.longitude,
+          type: 'timeline_item',
+          address: item.address,
+          visit_time: item.start_time,
+          duration: item.duration_minutes
+        });
+      }
+    });
+
+    // Add custom pins
+    customPins.forEach((pin: any) => {
+      waypoints.push({
+        id: pin.id,
+        name: pin.name,
+        latitude: pin.latitude,
+        longitude: pin.longitude,
+        type: 'custom_pin',
+        address: pin.address,
+        icon: pin.icon,
+        color: pin.color
+      });
+    });
+
+    // Add destinations
+    destinations.forEach((dest: any) => {
+      if (dest.latitude && dest.longitude) {
+        waypoints.push({
+          id: dest.id,
+          name: dest.name,
+          latitude: dest.latitude,
+          longitude: dest.longitude,
+          type: 'destination',
+          address: dest.address,
+          visit_date: dest.visit_date
+        });
+      }
+    });
+
+    // Calculate routes between waypoints
+    const routes = [];
+    for (let i = 0; i < waypoints.length - 1; i++) {
+      const from = waypoints[i];
+      const to = waypoints[i + 1];
+      
+      const distance = calculateDistance(from.latitude, from.longitude, to.latitude, to.longitude);
+      const duration = Math.round(distance / 80); // Walking speed ~80m/min
+      
+      routes.push({
+        from_waypoint: from.id,
+        to_waypoint: to.id,
+        distance_meters: Math.round(distance),
+        duration_minutes: duration,
+        transport_mode: selectOptimalTransportMode(distance, duration),
+        instructions: generateNavigationInstructions(from, to, distance, duration)
+      });
+    }
+
+    res.json({
+      navigation: {
+        waypoints: waypoints,
+        routes: routes,
+        total_distance: routes.reduce((sum, route) => sum + route.distance_meters, 0),
+        total_duration: routes.reduce((sum, route) => sum + route.duration_minutes, 0),
+        map_type: 'google_maps',
+        zoom_level: 14,
+        center_lat: waypoints[0]?.latitude || 35.6762,
+        center_lng: waypoints[0]?.longitude || 139.6503
+      },
+      metadata: {
+        generated_at: new Date().toISOString(),
+        waypoints_count: waypoints.length,
+        routes_count: routes.length,
+        optimize_for: 'time'
+      }
+    });
+  } catch (error: any) {
+    console.error('Navigation API error:', error);
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// F41: 全行程離線模式 - Download offline data
+app.get('/api/trips/:id/offline-download', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    // Generate offline package data
+    const offlinePackage = {
+      trip_id: req.params.id,
+      trip_name: (trip as any).name,
+      destination: (trip as any).destination,
+      start_date: (trip as any).start_date,
+      end_date: (trip as any).end_date,
+      generated_at: new Date().toISOString(),
+      file_size_mb: 2.5,
+      estimated_download_time: '30秒',
+      includes: [
+        '基本行程資料',
+        '地圖地標點',
+        '交通路線',
+        '景點詳細資訊',
+        '離線天氣資料',
+        '緊急聯絡資訊'
+      ],
+      offline_features: {
+        map_navigation: true,
+        timeline_view: true,
+        poi_search: true,
+        emergency_contacts: true,
+        weather_forecast: true,
+        currency_conversion: true
+      }
+    };
+
+    // Create download record
+    const downloadId = generateUUID();
+    const now = new Date().toISOString();
+    
+    db.prepare(`
+      INSERT INTO offline_downloads (id, trip_id, user_id, package_size_mb, download_status, created_at)
+      VALUES (?, ?, ?, ?, 'generating', ?)
+    `).run(
+      downloadId,
+      req.params.id,
+      user.id,
+      offlinePackage.file_size_mb,
+      now
+    );
+
+    // Simulate package generation
+    setTimeout(() => {
+      db.prepare(`
+        UPDATE offline_downloads SET download_status = 'ready', package_url = ?, updated_at = ?
+        WHERE id = ?
+      `).run(
+        `/api/trips/${req.params.id}/offline-package.zip`,
+        new Date().toISOString(),
+        downloadId
+      );
+    }, 2000);
+
+    res.status(202).json({
+      message: 'Offline package generation started',
+      download: {
+        id: downloadId,
+        package: offlinePackage,
+        status: 'generating',
+        estimated_completion: new Date(Date.now() + 2000).toISOString()
+      }
+    });
+  } catch (error: any) {
+    console.error('Offline download API error:', error);
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// GET /api/trips/:id/offline-status - Check offline download status
+app.get('/api/trips/:id/offline-status', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    const download = db.prepare(`
+      SELECT * FROM offline_downloads 
+      WHERE trip_id = ? AND user_id = ? 
+      ORDER BY created_at DESC 
+      LIMIT 1
+    `).get(req.params.id, user.id);
+
+    if (!download) {
+      return res.json({
+        offline_status: 'not_started',
+        message: 'No offline download initiated',
+        available_offline: false
+      });
+    }
+
+    res.json({
+      offline_status: (download as any).download_status,
+      download: download,
+      available_offline: (download as any).download_status === 'ready',
+      package_url: (download as any).download_status === 'ready' ? `/api/trips/${req.params.id}/offline-package.zip` : null
+    });
+  } catch (error: any) {
+    console.error('Offline status API error:', error);
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// F42: 實時 GPS 行程追蹤 - Start/stop GPS tracking
+app.post('/api/trips/:id/gps-tracking/start', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    // Check if tracking is already active
+    const activeTracking = db.prepare('SELECT * FROM gps_tracking WHERE trip_id = ? AND is_active = TRUE').get(req.params.id);
+    if (activeTracking) {
+      return res.status(409).json({ 
+        error: 'GPS tracking is already active',
+        tracking_session: activeTracking 
+      });
+    }
+
+    const trackingId = generateUUID();
+    const now = new Date().toISOString();
+    
+    db.prepare(`
+      INSERT INTO gps_tracking (id, trip_id, user_id, start_time, is_active, created_at)
+      VALUES (?, ?, ?, ?, TRUE, ?)
+    `).run(trackingId, req.params.id, user.id, now, now);
+
+    // Get first timeline item as starting point
+    const firstItem = db.prepare(`
+      SELECT ti.*, d.latitude, d.longitude, d.name as dest_name
+      FROM timeline_items ti
+      LEFT JOIN destinations d ON ti.destination_id = d.id
+      WHERE ti.trip_id = ?
+      ORDER BY ti.order_index ASC
+      LIMIT 1
+    `).get(req.params.id);
+
+    res.status(201).json({
+      message: 'GPS tracking started successfully',
+      tracking_session: {
+        id: trackingId,
+        trip_id: req.params.id,
+        start_time: now,
+        is_active: true,
+        current_location: {
+          latitude: 35.6762,
+          longitude: 139.6503,
+          accuracy: 5,
+          timestamp: now
+        },
+        next_destination: firstItem,
+        tracking_status: 'active'
+      }
+    });
+  } catch (error: any) {
+    console.error('GPS tracking start error:', error);
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// POST /api/trips/:id/gps-tracking/stop - Stop GPS tracking
+app.post('/api/trips/:id/gps-tracking/stop', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    const activeTracking = db.prepare('SELECT * FROM gps_tracking WHERE trip_id = ? AND is_active = TRUE').get(req.params.id);
+    if (!activeTracking) {
+      return res.status(400).json({ error: 'No active GPS tracking session found' });
+    }
+
+    const activeTrackingId = (activeTracking as any).id;
+    const activeTrackingStartTime = (activeTracking as any).start_time;
+    const stopTime = new Date().toISOString();
+    
+    // Mark tracking as completed
+    db.prepare(`
+      UPDATE gps_tracking SET 
+        end_time = ?, 
+        is_active = FALSE, 
+        total_distance_meters = ?,
+        completed_at = ?
+      WHERE id = ?
+    `).run(
+      stopTime,
+      Math.floor(Math.random() * 5000) + 1000, // Mock total distance
+      stopTime,
+      activeTrackingId
+    );
+
+    // Get tracking summary
+    const locations = db.prepare(`
+      SELECT * FROM gps_locations 
+      WHERE tracking_id = ? 
+      ORDER BY timestamp ASC
+    `).all(activeTrackingId);
+
+    const trackingSummary = {
+      id: activeTrackingId,
+      trip_id: req.params.id,
+      start_time: activeTrackingStartTime,
+      end_time: stopTime,
+      duration_minutes: Math.floor((new Date(stopTime).getTime() - new Date(activeTrackingStartTime).getTime()) / (1000 * 60)),
+      locations_count: locations.length,
+      total_distance_meters: Math.floor(Math.random() * 5000) + 1000,
+      avg_speed_kmh: Math.floor(Math.random() * 5) + 3,
+      path: locations.slice(0, 10) // Return first 10 locations for demo
+    };
+
+    res.json({
+      message: 'GPS tracking stopped successfully',
+      tracking_summary: trackingSummary
+    });
+  } catch (error: any) {
+    console.error('GPS tracking stop error:', error);
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// POST /api/trips/:id/gps-tracking/location - Update GPS location
+app.post('/api/trips/:id/gps-tracking/location', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    const { latitude, longitude, accuracy, timestamp, battery_level } = req.body;
+
+    if (!latitude || !longitude) {
+      return res.status(400).json({ error: 'Latitude and longitude are required' });
+    }
+
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    const activeTracking = db.prepare('SELECT * FROM gps_tracking WHERE trip_id = ? AND is_active = TRUE').get(req.params.id);
+    if (!activeTracking) {
+      return res.status(400).json({ error: 'No active GPS tracking session found' });
+    }
+
+    const activeTrackingId = (activeTracking as any).id;
+    
+    // Store location
+    const locationId = generateUUID();
+    const now = new Date().toISOString();
+    
+    db.prepare(`
+      INSERT INTO gps_locations (id, tracking_id, latitude, longitude, accuracy, timestamp, battery_level, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      locationId,
+      activeTrackingId,
+      latitude,
+      longitude,
+      accuracy || 10,
+      timestamp || now,
+      battery_level,
+      now
+    );
+
+    // Check if user is near next destination
+    const nextItem = db.prepare(`
+      SELECT ti.*, d.latitude, d.longitude, d.name as dest_name
+      FROM timeline_items ti
+      LEFT JOIN destinations d ON ti.destination_id = d.id
+      WHERE ti.trip_id = ?
+      ORDER BY ti.order_index ASC
+      LIMIT 1
+    `).get(req.params.id);
+
+    let proximityAlert = null;
+    if (nextItem && (nextItem as any).latitude && (nextItem as any).longitude) {
+      const distance = calculateDistance(latitude, longitude, (nextItem as any).latitude, (nextItem as any).longitude);
+      if (distance < 200) { // Within 200 meters
+        proximityAlert = {
+          destination_id: (nextItem as any).destination_id,
+          destination_name: (nextItem as any).dest_name,
+          distance_meters: Math.round(distance),
+          estimated_arrival: new Date(Date.now() + 5 * 60000).toISOString(), // 5 minutes
+          message: `即將抵達${(nextItem as any).dest_name}`
+        };
+      }
+    }
+
+    res.json({
+      message: 'GPS location updated successfully',
+      location_id: locationId,
+      proximity_alert: proximityAlert,
+      tracking_status: 'active'
+    });
+  } catch (error: any) {
+    console.error('GPS location update error:', error);
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// F43: 數位票券與 PDF 夾 - Digital tickets management
+app.get('/api/trips/:id/digital-tickets', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    const tickets = db.prepare(`
+      SELECT dt.*, u.name as user_name
+      FROM digital_tickets dt
+      LEFT JOIN users u ON dt.user_id = u.id
+      WHERE dt.trip_id = ?
+      ORDER BY dt.ticket_type, dt.valid_from DESC
+    `).all(req.params.id);
+
+    // Format tickets with PDF attachments info
+    const formattedTickets = tickets.map((ticket: any) => ({
+      ...ticket,
+      attachments: ticket.attachments ? JSON.parse(ticket.attachments) : [],
+      is_valid: isTicketValid(ticket),
+      days_until_expiry: calculateDaysUntilExpiry(ticket.valid_until)
+    }));
+
+    res.json({
+      digital_tickets: formattedTickets,
+      total_tickets: formattedTickets.length,
+      statistics: {
+        valid_tickets: formattedTickets.filter(t => t.is_valid).length,
+        expired_tickets: formattedTickets.filter(t => !t.is_valid).length,
+        upcoming_expirations: formattedTickets.filter(t => t.days_until_expiry <= 7 && t.days_until_expiry > 0).length
+      }
+    });
+  } catch (error: any) {
+    console.error('Digital tickets API error:', error);
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// POST /api/trips/:id/digital-tickets - Add digital ticket
+app.post('/api/trips/:id/digital-tickets', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    const { 
+      ticket_type, 
+      ticket_name, 
+      provider_name, 
+      valid_from, 
+      valid_until, 
+      ticket_number,
+      qr_code_data,
+      pdf_attachments,
+      notes 
+    } = req.body;
+
+    if (!ticket_type || !ticket_name || !valid_from || !valid_until) {
+      return res.status(400).json({ 
+        error: 'Ticket type, name, valid_from, and valid_until are required' 
+      });
+    }
+
+    const ticketId = generateUUID();
+    const now = new Date().toISOString();
+
+    db.prepare(`
+      INSERT INTO digital_tickets (
+        id, trip_id, user_id, ticket_type, ticket_name, provider_name,
+        valid_from, valid_until, ticket_number, qr_code_data,
+        pdf_attachments, notes, created_at, updated_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      ticketId,
+      req.params.id,
+      user.id,
+      ticket_type,
+      ticket_name,
+      provider_name,
+      valid_from,
+      valid_until,
+      ticket_number,
+      qr_code_data,
+      pdf_attachments ? JSON.stringify(pdf_attachments) : null,
+      notes,
+      now,
+      now
+    );
+
+    const ticket = db.prepare('SELECT * FROM digital_tickets WHERE id = ?').get(ticketId) as any;
+    res.status(201).json({
+      message: 'Digital ticket added successfully',
+      digital_ticket: {
+        ...ticket,
+        is_valid: isTicketValid(ticket),
+        days_until_expiry: calculateDaysUntilExpiry(ticket.valid_until)
+      }
+    });
+  } catch (error: any) {
+    console.error('Add digital ticket error:', error);
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// F44: 鬧鐘推播提醒 - Alarm and notification management
+app.get('/api/trips/:id/alarms', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    const alarms = db.prepare(`
+      SELECT a.*, ti.name as timeline_item_name, ti.start_time, ti.end_time
+      FROM trip_alarms a
+      LEFT JOIN timeline_items ti ON a.timeline_item_id = ti.id
+      WHERE a.trip_id = ?
+      ORDER BY a.scheduled_time ASC
+    `).all(req.params.id);
+
+    const now = new Date().toISOString();
+    const activeAlarms = alarms.filter((alarm: any) => new Date((alarm as any).scheduled_time) > new Date(now));
+    const pastAlarms = alarms.filter((alarm: any) => new Date((alarm as any).scheduled_time) <= new Date(now));
+
+    res.json({
+      alarms: alarms,
+      active_alarms: activeAlarms,
+      past_alarms: pastAlarms,
+      statistics: {
+        total_alarms: alarms.length,
+        active_count: activeAlarms.length,
+        past_count: pastAlarms.length,
+        upcoming_hours: activeAlarms.length > 0 ? 
+          Math.ceil((new Date((activeAlarms[0] as any).scheduled_time).getTime() - Date.now()) / (1000 * 3600)) : 0
+      }
+    });
+  } catch (error: any) {
+    console.error('Alarms API error:', error);
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// POST /api/trips/:id/alarms - Create alarm
+app.post('/api/trips/:id/alarms', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    const { 
+      timeline_item_id, 
+      alarm_type, 
+      scheduled_time, 
+      reminder_message,
+      is_repeating,
+      repeat_interval 
+    } = req.body;
+
+    if (!alarm_type || !scheduled_time || !reminder_message) {
+      return res.status(400).json({ 
+        error: 'Alarm type, scheduled time, and reminder message are required' 
+      });
+    }
+
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    const alarmId = generateUUID();
+    const now = new Date().toISOString();
+
+    db.prepare(`
+      INSERT INTO trip_alarms (
+        id, trip_id, user_id, timeline_item_id, alarm_type, 
+        scheduled_time, reminder_message, is_repeating, repeat_interval, created_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      alarmId,
+      req.params.id,
+      user.id,
+      timeline_item_id,
+      alarm_type,
+      scheduled_time,
+      reminder_message,
+      is_repeating || false,
+      repeat_interval,
+      now
+    );
+
+    const alarm = db.prepare(`
+      SELECT a.*, ti.name as timeline_item_name, ti.start_time, ti.end_time
+      FROM trip_alarms a
+      LEFT JOIN timeline_items ti ON a.timeline_item_id = ti.id
+      WHERE a.id = ?
+    `).get(alarmId) as any;
+
+    res.status(201).json({
+      message: 'Alarm created successfully',
+      alarm: alarm
+    });
+  } catch (error: any) {
+    console.error('Create alarm error:', error);
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// DELETE /api/trips/:id/alarms/:alarmId - Delete alarm
+app.delete('/api/trips/:id/alarms/:alarmId', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    const alarm = db.prepare('SELECT * FROM trip_alarms WHERE id = ? AND trip_id = ?').get(req.params.alarmId, req.params.id);
+    if (!alarm) {
+      return res.status(404).json({ error: 'Alarm not found' });
+    }
+
+    db.prepare('DELETE FROM trip_alarms WHERE id = ?').run(req.params.alarmId);
+
+    res.json({ 
+      message: 'Alarm deleted successfully',
+      deleted_alarm: alarm 
+    });
+  } catch (error: any) {
+    console.error('Delete alarm error:', error);
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// F45: 緊急求助資訊卡 - Emergency help information
+app.get('/api/trips/:id/emergency-info', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    // Get emergency contacts
+    const emergencyContacts = db.prepare(`
+      SELECT * FROM emergency_contacts 
+      WHERE user_id = ? 
+      ORDER BY priority ASC
+    `).all(user.id);
+
+    // Get emergency services for the destination
+    const emergencyServices = db.prepare(`
+      SELECT * FROM emergency_services 
+      WHERE destination = ? OR is_global = TRUE
+      ORDER BY priority ASC
+    `).all((trip as any).destination || 'tokyo');
+
+    // Get medical information
+    const medicalInfo = db.prepare('SELECT * FROM medical_info WHERE user_id = ?').get(user.id);
+
+    // Generate emergency kit checklist
+    const emergencyChecklist = [
+      { item: '緊急聯絡人清單', completed: true, priority: 1 },
+      { item: '護照/身份證件', completed: true, priority: 1 },
+      { item: '保險證明文件', completed: true, priority: 1 },
+      { item: '醫療資訊', completed: medicalInfo ? true : false, priority: 2 },
+      { item: '當地緊急電話', completed: true, priority: 1 },
+      { item: '醫療用品', completed: false, priority: 2 },
+      { item: '現金/信用卡', completed: true, priority: 1 },
+      { item: '翻譯應用程式', completed: true, priority: 2 }
+    ];
+
+    res.json({
+      emergency_info: {
+        trip_id: req.params.id,
+        destination: (trip as any).destination,
+        created_at: new Date().toISOString(),
+        contacts: emergencyContacts,
+        services: emergencyServices,
+        medical_info: medicalInfo,
+        checklist: emergencyChecklist,
+        safety_tips: generateSafetyTips((trip as any).destination)
+      }
+    });
+  } catch (error: any) {
+    console.error('Emergency info API error:', error);
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// POST /api/trips/:id/emergency-contacts - Add emergency contact
+app.post('/api/trips/:id/emergency-contacts', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    const { name, relationship, phone, email, country_code, priority = 1 } = req.body;
+
+    if (!name || !relationship || !phone) {
+      return res.status(400).json({ 
+        error: 'Name, relationship, and phone are required' 
+      });
+    }
+
+    const contactId = generateUUID();
+    const now = new Date().toISOString();
+
+    db.prepare(`
+      INSERT INTO emergency_contacts (
+        id, user_id, name, relationship, phone, email, country_code, priority, created_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      contactId,
+      user.id,
+      name,
+      relationship,
+      phone,
+      email || null,
+      country_code || '+886',
+      priority,
+      now
+    );
+
+    const contact = db.prepare('SELECT * FROM emergency_contacts WHERE id = ?').get(contactId);
+    res.status(201).json({
+      message: 'Emergency contact added successfully',
+      emergency_contact: contact
+    });
+  } catch (error: any) {
+    console.error('Add emergency contact error:', error);
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// F46: 多幣別記帳本與匯率換算 - Multi-currency expense tracker
+app.get('/api/trips/:id/expenses', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    const expenses = db.prepare(`
+      SELECT e.*, c.name as category_name, c.icon as category_icon
+      FROM trip_expenses e
+      LEFT JOIN expense_categories c ON e.category_id = c.id
+      WHERE e.trip_id = ?
+      ORDER BY e.expense_date DESC, e.created_at DESC
+    `).all(req.params.id);
+
+    // Calculate totals by currency
+    const currencyTotals = {};
+    expenses.forEach((expense: any) => {
+      const currency = expense.currency || 'TWD';
+      if (!currencyTotals[currency]) {
+        currencyTotals[currency] = { amount: 0, count: 0 };
+      }
+      currencyTotals[currency].amount += expense.amount;
+      currencyTotals[currency].count += 1;
+    });
+
+    // Get exchange rates (mock data)
+    const exchangeRates = {
+      TWD: { USD: 0.031, EUR: 0.029, JPY: 4.8, KRW: 42.5 },
+      USD: { TWD: 32.5, EUR: 0.93, JPY: 155, KRW: 1375 },
+      EUR: { TWD: 35.2, USD: 1.08, JPY: 167, KRW: 1485 },
+      JPY: { TWD: 0.21, USD: 0.0065, EUR: 0.006, KRW: 8.9 },
+      KRW: { TWD: 0.024, USD: 0.00073, EUR: 0.00067, JPY: 0.11 }
+    };
+
+    // Convert all totals to base currency (TWD)
+    const baseCurrency = 'TWD';
+    const totalsInBase = {};
+    Object.keys(currencyTotals).forEach(currency => {
+      if (currency === baseCurrency) {
+        totalsInBase[currency] = currencyTotals[currency];
+      } else if (exchangeRates[currency] && exchangeRates[currency][baseCurrency]) {
+        totalsInBase[currency] = {
+          amount: currencyTotals[currency].amount * exchangeRates[currency][baseCurrency],
+          count: currencyTotals[currency].count
+        };
+      }
+    });
+
+    res.json({
+      expenses: expenses,
+      currency_totals: currencyTotals,
+      totals_in_base_currency: totalsInBase,
+      total_amount: Object.values(totalsInBase).reduce((sum, total: any) => sum + total.amount, 0),
+      exchange_rates: exchangeRates,
+      categories: getExpenseCategories()
+    });
+  } catch (error: any) {
+    console.error('Expenses API error:', error);
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// POST /api/trips/:id/expenses - Add expense
+app.post('/api/trips/:id/expenses', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    const { 
+      amount, 
+      currency = 'TWD', 
+      category_id, 
+      description, 
+      expense_date,
+      location,
+      payment_method,
+      receipt_url 
+    } = req.body;
+
+    if (!amount || !currency || !expense_date || !description) {
+      return res.status(400).json({ 
+        error: 'Amount, currency, expense date, and description are required' 
+      });
+    }
+
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    const expenseId = generateUUID();
+    const now = new Date().toISOString();
+
+    db.prepare(`
+      INSERT INTO trip_expenses (
+        id, trip_id, user_id, amount, currency, category_id, 
+        description, expense_date, location, payment_method, 
+        receipt_url, created_at, updated_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      expenseId,
+      req.params.id,
+      user.id,
+      amount,
+      currency,
+      category_id,
+      description,
+      expense_date,
+      location,
+      payment_method,
+      receipt_url,
+      now,
+      now
+    );
+
+    const expense = db.prepare(`
+      SELECT e.*, c.name as category_name, c.icon as category_icon
+      FROM trip_expenses e
+      LEFT JOIN expense_categories c ON e.category_id = c.id
+      WHERE e.id = ?
+    `).get(expenseId) as any;
+
+    res.status(201).json({
+      message: 'Expense added successfully',
+      expense: expense
+    });
+  } catch (error: any) {
+    console.error('Add expense error:', error);
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// Helper functions for Module 5
+
+function calculateDistance(lat1: number, lon1: number, lat2: number, lon2: number): number {
+  const R = 6371; // Earth's radius in km
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLon = (lon2 - lon1) * Math.PI / 180;
+  const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+    Math.sin(dLon/2) * Math.sin(dLon/2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+  return R * c * 1000; // Return distance in meters
+}
+
+function selectOptimalTransportMode(distance: number, duration: number): string {
+  if (distance < 500) return 'walking';
+  if (distance < 5000) return 'public';
+  if (distance < 20000) return 'taxi';
+  return 'driving';
+}
+
+function generateNavigationInstructions(from: any, to: any, distance: number, duration: number): any[] {
+  const instructions = [];
+  
+  instructions.push({
+    step: 1,
+    instruction: `從${from.name}出發`,
+    distance: 0,
+    duration: 0
+  });
+
+  const transportMode = selectOptimalTransportMode(distance, duration);
+  const distanceKm = (distance / 1000).toFixed(1);
+  
+  if (transportMode === 'walking') {
+    instructions.push({
+      step: 2,
+      instruction: `步行前往${to.name}`,
+      distance: `${distanceKm}公里`,
+      duration: `${Math.round(duration)}分鐘`
+    });
+  } else if (transportMode === 'public') {
+    instructions.push({
+      step: 2,
+      instruction: `搭乘大眾運輸前往${to.name}`,
+      distance: `${distanceKm}公里`,
+      duration: `${Math.round(duration * 1.2)}分鐘`
+    });
+  } else {
+    instructions.push({
+      step: 2,
+      instruction: `搭乘${transportMode}前往${to.name}`,
+      distance: `${distanceKm}公里`,
+      duration: `${Math.round(duration * 0.8)}分鐘`
+    });
+  }
+
+  instructions.push({
+    step: 3,
+    instruction: `抵達${to.name}`,
+    distance: 0,
+    duration: 0
+  });
+
+  return instructions;
+}
+
+function isTicketValid(ticket: any): boolean {
+  const now = new Date();
+  const validFrom = new Date(ticket.valid_from);
+  const validUntil = new Date(ticket.valid_until);
+  return now >= validFrom && now <= validUntil;
+}
+
+function calculateDaysUntilExpiry(validUntil: string): number {
+  const now = new Date();
+  const expiry = new Date(validUntil);
+  const diffTime = expiry.getTime() - now.getTime();
+  return Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+}
+
+function generateSafetyTips(destination: string): string[] {
+  const tips = [
+    '隨身攜帶緊急聯絡人資訊',
+    '了解當地緊急電話號碼',
+    '重要文件影印並分散存放',
+    '記住當地使領館聯絡方式',
+    '避免獨自前往偏遠地區',
+    '注意天氣變化並準備應對措施',
+    '保持與家人朋友定時聯絡'
+  ];
+
+  if (destination === 'japan') {
+    tips.unshift('學習基本日語短句');
+    tips.push('了解日本緊急避難程序');
+  } else if (destination === 'korea') {
+    tips.push('了解韓國緊急避難程序');
+  }
+
+  return tips;
+}
+
+function getExpenseCategories(): any[] {
+  return [
+    { id: 'food', name: '餐飲', icon: '🍽️', color: '#FF6B6B' },
+    { id: 'transport', name: '交通', icon: '🚗', color: '#4ECDC4' },
+    { id: 'accommodation', name: '住宿', icon: '🏨', color: '#45B7D1' },
+    { id: 'attractions', name: '景點', icon: '🎫', color: '#96CEB4' },
+    { id: 'shopping', name: '購物', icon: '🛍️', color: '#FFEAA7' },
+    { id: 'medical', name: '醫療', icon: '💊', color: '#DDA0DD' },
+    { id: 'other', name: '其他', icon: '📦', color: '#D3D3D3' }
+  ];
+}
+
+// F47: Shared Fund Splitting System APIs
+
+// GET /api/trips/:id/splits - List all splits for a trip
+app.get('/api/trips/:id/splits', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+    
+    const splits = db.prepare('SELECT * FROM trip_splits WHERE trip_id = ? ORDER BY created_at DESC').all(req.params.id);
+    
+    // Get split items and participants for each split
+    const splitsWithDetails = splits.map((split: any) => {
+      const items = db.prepare('SELECT * FROM trip_split_items WHERE split_id = ? ORDER BY created_at ASC').all(split.id);
+      const participants = db.prepare('SELECT * FROM trip_split_participants WHERE split_id = ? ORDER BY created_at ASC').all(split.id);
+      
+      // Calculate totals
+      const totalAmount = items.reduce((sum: number, item: any) => sum + item.amount, 0);
+      const totalOwed = participants.reduce((sum: number, participant: any) => sum + participant.amount_owed, 0);
+      const totalPaid = participants.reduce((sum: number, participant: any) => sum + participant.amount_paid, 0);
+      
+      return {
+        ...(split as any),
+        items,
+        participants,
+        total_amount: totalAmount,
+        total_owed: totalOwed,
+        total_paid: totalPaid,
+        is_settled: (totalOwed as number) === (totalPaid as number) && (totalOwed as number) > 0
+      };
+    });
+    
+    res.json({ splits: splitsWithDetails });
+  } catch (error: any) {
+    console.error('Get splits error:', error);
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// POST /api/trips/:id/splits - Create a new split
+app.post('/api/trips/:id/splits', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+    
+    const { name, description, participants } = req.body;
+    
+    if (!name || !participants || !Array.isArray(participants)) {
+      return res.status(400).json({ error: 'Split name and participants are required' });
+    }
+    
+    const splitId = generateUUID();
+    const now = new Date().toISOString();
+    
+    // Create the split
+    db.prepare(`
+      INSERT INTO trip_splits (id, trip_id, name, description, created_by, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(splitId, req.params.id, name, description || null, user.id, now, now);
+    
+    // Add participants
+    participants.forEach((participant: any) => {
+      const participantId = generateUUID();
+      const amountPerPerson = 0; // Will be calculated when items are added
+      
+      db.prepare(`
+        INSERT INTO trip_split_participants (id, split_id, user_id, amount_owed, amount_paid, settled, created_at)
+        VALUES (?, ?, ?, ?, ?, FALSE, ?)
+      `).run(participantId, splitId, participant.id, amountPerPerson, 0, now);
+    });
+    
+    const split = db.prepare('SELECT * FROM trip_splits WHERE id = ?').get(splitId);
+    res.status(201).json({ split });
+  } catch (error: any) {
+    console.error('Create split error:', error);
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// GET /api/trips/:id/splits/:splitId - Get a specific split
+app.get('/api/trips/:id/splits/:splitId', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+    
+    const split = db.prepare('SELECT * FROM trip_splits WHERE id = ? AND trip_id = ?').get(req.params.splitId, req.params.id);
+    if (!split) {
+      return res.status(404).json({ error: 'Split not found' });
+    }
+    
+    // Get items and participants
+    const items = db.prepare('SELECT * FROM trip_split_items WHERE split_id = ? ORDER BY created_at ASC').all((split as any).id);
+    const participants = db.prepare('SELECT * FROM trip_split_participants WHERE split_id = ? ORDER BY created_at ASC').all((split as any).id);
+    
+    // Calculate totals
+    const totalAmount = items.reduce((sum: number, item: any) => sum + item.amount, 0);
+    const totalOwed = participants.reduce((sum: number, participant: any) => sum + participant.amount_owed, 0);
+    const totalPaid = participants.reduce((sum: number, participant: any) => sum + participant.amount_paid, 0);
+    
+    const splitWithDetails = {
+      ...(split as any),
+      items,
+      participants,
+      total_amount: totalAmount,
+      total_owed: totalOwed,
+      total_paid: totalPaid,
+      is_settled: (totalOwed as number) === (totalPaid as number) && (totalOwed as number) > 0
+    };
+    
+    res.json({ split: splitWithDetails });
+  } catch (error: any) {
+    console.error('Get split error:', error);
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// POST /api/trips/:id/splits/:splitId/items - Add an item to a split
+app.post('/api/trips/:id/splits/:splitId/items', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+    
+    const split = db.prepare('SELECT * FROM trip_splits WHERE id = ? AND trip_id = ?').get(req.params.splitId, req.params.id);
+    if (!split) {
+      return res.status(404).json({ error: 'Split not found' });
+    }
+    
+    const { amount, description, category, paid_by, participants } = req.body;
+    
+    if (!amount || !participants || !Array.isArray(participants)) {
+      return res.status(400).json({ error: 'Amount and participants are required' });
+    }
+    
+    const itemId = generateUUID();
+    const now = new Date().toISOString();
+    
+    // Create the item
+    db.prepare(`
+      INSERT INTO trip_split_items (id, split_id, amount, description, category, paid_by, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(itemId, req.params.splitId, amount, description || null, category || null, paid_by || user.id, now);
+    
+    // Update participant balances
+    const amountPerPerson = amount / participants.length;
+    
+    participants.forEach((participantId: string) => {
+      // Add to amount owed for each participant
+      db.prepare(`
+        UPDATE trip_split_participants 
+        SET amount_owed = amount_owed + ?, updated_at = ?
+        WHERE split_id = ? AND user_id = ?
+      `).run(amountPerPerson, now, req.params.splitId, participantId);
+      
+      // Add to amount paid if this participant paid
+      if (paid_by === participantId) {
+        db.prepare(`
+          UPDATE trip_split_participants 
+          SET amount_paid = amount_paid + ?, updated_at = ?
+          WHERE split_id = ? AND user_id = ?
+        `).run(amount, now, req.params.splitId, participantId);
+      }
+    });
+    
+    const item = db.prepare('SELECT * FROM trip_split_items WHERE id = ?').get(itemId);
+    res.status(201).json({ item });
+  } catch (error: any) {
+    console.error('Add item error:', error);
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// GET /api/trips/:id/splits/:splitId/balance - Get balance information for a split
+app.get('/api/trips/:id/splits/:splitId/balance', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+    
+    const split = db.prepare('SELECT * FROM trip_splits WHERE id = ? AND trip_id = ?').get(req.params.splitId, req.params.id);
+    if (!split) {
+      return res.status(404).json({ error: 'Split not found' });
+    }
+    
+    // Get all participants and their balances
+    const participants = db.prepare('SELECT * FROM trip_split_participants WHERE split_id = ? ORDER BY created_at ASC').all((split as any).id);
+    
+    // Calculate overall totals
+    const totalAmount = participants.reduce((sum: number, participant: any) => sum + participant.amount_owed, 0);
+    const totalPaid = participants.reduce((sum: number, participant: any) => sum + participant.amount_paid, 0);
+    
+    // Calculate balance for each participant
+    const balances = participants.map((participant: any) => {
+      const balance = participant.amount_owed - participant.amount_paid;
+      return {
+        participant_id: participant.user_id,
+        participant_name: participant.user_id, // In real app, fetch user name
+        amount_owed: participant.amount_owed,
+        amount_paid: participant.amount_paid,
+        balance: balance,
+        status: balance === 0 ? 'settled' : balance > 0 ? 'owes' : 'owed'
+      };
+    });
+    
+    res.json({
+      split_id: (split as any).id,
+      split_name: (split as any).name,
+      total_amount: totalAmount,
+      total_paid: totalPaid,
+      is_settled: (totalAmount as number) === (totalPaid as number) && (totalAmount as number) > 0,
+      balances
+    });
+  } catch (error: any) {
+    console.error('Get balance error:', error);
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// F48: Beautiful Travel Handbook PDF Export
+import PDFDocument from 'pdfkit';
+
+const PRIMARY_COLOR = '#4ECDC4';
+const ACCENT_COLOR = '#FF6B6B';
+const DARK_TEXT = '#2D3436';
+const LIGHT_TEXT = '#636E72';
+const BG_ACCENT = '#DFE6E9';
+const WHITE = '#FFFFFF';
+const PAGE_W = 595.28;
+const PAGE_H = 841.89;
+const MARGIN = 50;
+
+function drawColorBar(doc: PDFKit.PDFDocument, y: number, color: string, width?: number) {
+  doc.save();
+  doc.rect(MARGIN, y, width || (PAGE_W - MARGIN * 2), 4).fill(color);
+  doc.restore();
+}
+
+function drawRoundedBox(doc: PDFKit.PDFDocument, x: number, y: number, w: number, h: number, color: string) {
+  doc.save();
+  doc.roundedRect(x, y, w, h, 8).fill(color);
+  doc.restore();
+}
+
+function addCoverPage(doc: PDFKit.PDFDocument, trip: any) {
+  drawRoundedBox(doc, 0, 0, PAGE_W, PAGE_H, '#1B9CFC');
+  doc.save();
+  doc.rect(0, PAGE_H * 0.6, PAGE_W, PAGE_H * 0.4).fill(WHITE);
+  doc.restore();
+  doc.save();
+  doc.circle(PAGE_W / 2, 280, 55).fill(WHITE);
+  doc.restore();
+  doc.fontSize(40).fillColor('#1B9CFC').text('ZV', PAGE_W / 2 - 28, 262, { width: 60, align: 'center' });
+  doc.fontSize(36).fillColor(WHITE).text('ZenVoyage', 0, 360, { align: 'center' });
+  doc.fontSize(22).fillColor('#DFE6E9').text('Travel Handbook', 0, 402, { align: 'center' });
+  doc.moveDown(6);
+  const y = doc.y;
+  doc.fontSize(28).fillColor(DARK_TEXT).text(trip.name || '', MARGIN, y + 40, { align: 'center', width: PAGE_W - MARGIN * 2 });
+  if (trip.destination) {
+    doc.fontSize(16).fillColor(LIGHT_TEXT).text(trip.destination, MARGIN, doc.y + 10, { align: 'center', width: PAGE_W - MARGIN * 2 });
+  }
+  if (trip.start_date && trip.end_date) {
+    doc.fontSize(14).fillColor(LIGHT_TEXT).text(`${trip.start_date}  ~  ${trip.end_date}`, MARGIN, doc.y + 10, { align: 'center', width: PAGE_W - MARGIN * 2 });
+  }
+  doc.fontSize(11).fillColor(LIGHT_TEXT).text(
+    `Generated: ${new Date().toLocaleDateString('zh-TW', { year: 'numeric', month: 'long', day: 'numeric' })}`,
+    MARGIN, PAGE_H - 80, { align: 'center', width: PAGE_W - MARGIN * 2 }
+  );
+}
+
+function addTOC(doc: PDFKit.PDFDocument, sections: { title: string; icon: string }[]) {
+  doc.addPage();
+  doc.fontSize(22).fillColor(DARK_TEXT).text('Table of Contents', MARGIN, 60);
+  drawColorBar(doc, 90, PRIMARY_COLOR, 120);
+  let y = 120;
+  sections.forEach((section, i) => {
+    drawRoundedBox(doc, MARGIN, y, PAGE_W - MARGIN * 2, 36, i % 2 === 0 ? '#F8F9FA' : WHITE);
+    doc.fontSize(14).fillColor(DARK_TEXT).text(`${section.icon}  ${section.title}`, MARGIN + 16, y + 10);
+    doc.fontSize(11).fillColor(LIGHT_TEXT).text(`Page ${i + 3}`, PAGE_W - MARGIN - 70, y + 12);
+    y += 42;
+  });
+}
+
+function addSectionHeader(doc: PDFKit.PDFDocument, title: string, icon: string) {
+  if (doc.y > PAGE_H - 160) doc.addPage();
+  const y = doc.y + 10;
+  drawRoundedBox(doc, MARGIN - 10, y - 5, PAGE_W - MARGIN * 2 + 20, 38, PRIMARY_COLOR);
+  doc.fontSize(16).fillColor(WHITE).text(`${icon}  ${title}`, MARGIN + 5, y + 5, { width: PAGE_W - MARGIN * 2 - 10 });
+  doc.y = y + 50;
+}
+
+function addInfoRow(doc: PDFKit.PDFDocument, label: string, value: string, icon?: string) {
+  const y = doc.y;
+  const prefix = icon ? `${icon} ` : '';
+  doc.fontSize(10).fillColor(LIGHT_TEXT).text(`${prefix}${label}`, MARGIN + 10, y, { width: 160 });
+  doc.fontSize(11).fillColor(DARK_TEXT).text(value || '--', MARGIN + 180, y, { width: PAGE_W - MARGIN * 2 - 190 });
+  doc.y = y + 22;
+}
+
+function safeStr(val: any, fallback: string = '--'): string {
+  if (val === null || val === undefined || val === '') return fallback;
+  return String(val);
+}
+
+function formatCurrency(amount: any, currency: string = 'JPY'): string {
+  const num = typeof amount === 'number' ? amount : parseFloat(amount) || 0;
+  return `${num.toLocaleString()} ${currency}`;
+}
+
+app.get('/api/trips/:id/export/pdf', async (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    const tripId = req.params.id;
+
+    const trip: any = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(tripId, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    let destinations: any[] = [];
+    let timelineItems: any[] = [];
+    let transportModes: any[] = [];
+    let bookings: any[] = [];
+    let collaborators: any[] = [];
+    let expenses: any[] = [];
+    let digitalTickets: any[] = [];
+    let customPins: any[] = [];
+    let emergencyContacts: any[] = [];
+    let transportSegments: any[] = [];
+
+    try { destinations = db.prepare('SELECT * FROM destinations WHERE trip_id = ? ORDER BY visit_date, order_index').all(tripId); } catch {}
+    try { timelineItems = db.prepare('SELECT ti.*, d.name as dest_name, d.latitude, d.longitude, d.address FROM timeline_items ti LEFT JOIN destinations d ON ti.destination_id = d.id WHERE ti.trip_id = ? ORDER BY ti.order_index').all(tripId); } catch {}
+    try { transportModes = db.prepare('SELECT * FROM transportation_modes WHERE trip_id = ?').all(tripId); } catch {}
+    try { bookings = db.prepare('SELECT * FROM bookings WHERE trip_id = ? ORDER BY date, start_time').all(tripId); } catch {}
+    try { collaborators = db.prepare('SELECT c.*, u.email, u.name FROM collaborators c JOIN users u ON c.user_id = u.id WHERE c.trip_id = ? ORDER BY c.invited_at DESC').all(tripId); } catch {}
+    try { expenses = db.prepare('SELECT e.*, c.name as category_name, c.icon as category_icon FROM trip_expenses e LEFT JOIN expense_categories c ON e.category_id = c.id WHERE e.trip_id = ? ORDER BY e.expense_date DESC').all(tripId); } catch {}
+    try { digitalTickets = db.prepare('SELECT * FROM digital_tickets WHERE trip_id = ? ORDER BY valid_from DESC').all(tripId); } catch {}
+    try { customPins = db.prepare('SELECT * FROM custom_pins WHERE trip_id = ? ORDER BY created_at DESC').all(tripId); } catch {}
+    try { emergencyContacts = db.prepare('SELECT * FROM emergency_contacts WHERE user_id = ? ORDER BY priority ASC').all(user.id); } catch {}
+    try { transportSegments = db.prepare('SELECT ts.*, dm.name as mode_name FROM transportation_segments ts LEFT JOIN transportation_modes dm ON ts.transport_mode_id = dm.id WHERE ts.trip_id = ?').all(tripId); } catch {}
+
+    const tempDir = path.join(__dirname, '../../temp');
+    if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir, { recursive: true });
+    const pdfPath = path.join(tempDir, `travel-handbook-${tripId}-${Date.now()}.pdf`);
+
+    const doc = new PDFDocument({ size: 'A4', margin: MARGIN, bufferPages: true });
+    const stream = fs.createWriteStream(pdfPath);
+    doc.pipe(stream);
+
+    addCoverPage(doc, trip);
+
+    const tocSections = [
+      { title: 'Trip Overview', icon: '\u{1F4CB}' },
+      { title: 'Daily Itinerary', icon: '\u{1F4C5}' },
+      { title: 'Destinations & Map', icon: '\u{1F4CD}' },
+      { title: 'Bookings & Tickets', icon: '\u{1F3AB}' },
+      { title: 'Transportation', icon: '\u{1F686}' },
+      { title: 'Expense Summary', icon: '\u{1F4B0}' },
+      { title: 'Travel Companions', icon: '\u{1F465}' },
+      { title: 'Emergency Info', icon: '\u{1F198}' },
+    ];
+    addTOC(doc, tocSections);
+
+    // === Section 1: Trip Overview ===
+    doc.addPage();
+    addSectionHeader(doc, 'Trip Overview', '\u{1F4CB}');
+    drawRoundedBox(doc, MARGIN, doc.y, PAGE_W - MARGIN * 2, 180, '#F8F9FA');
+    addInfoRow(doc, 'Trip Name', safeStr(trip.name));
+    addInfoRow(doc, 'Destination', safeStr(trip.destination));
+    addInfoRow(doc, 'Start Date', safeStr(trip.start_date));
+    addInfoRow(doc, 'End Date', safeStr(trip.end_date));
+    addInfoRow(doc, 'Duration', trip.start_date && trip.end_date ? `${Math.ceil((new Date(trip.end_date).getTime() - new Date(trip.start_date).getTime()) / 86400000)} days` : '--');
+    addInfoRow(doc, 'Status', safeStr(trip.status));
+    addInfoRow(doc, 'Timezone', safeStr(trip.timezone));
+    addInfoRow(doc, 'Base Location', safeStr(trip.base_location));
+
+    // === Section 2: Daily Itinerary ===
+    doc.addPage();
+    addSectionHeader(doc, 'Daily Itinerary', '\u{1F4C5}');
+
+    if (timelineItems.length === 0) {
+      doc.fontSize(12).fillColor(LIGHT_TEXT).text('No itinerary items yet.', MARGIN + 20, doc.y + 20);
+    } else {
+      let currentDate = '';
+      timelineItems.forEach((item: any, idx: number) => {
+        const itemDate = item.start_time ? new Date(item.start_time).toLocaleDateString('zh-TW') : '';
+        if (itemDate !== currentDate) {
+          if (idx > 0) doc.y += 6;
+          currentDate = itemDate;
+          if (doc.y > PAGE_H - 140) doc.addPage();
+          drawRoundedBox(doc, MARGIN + 5, doc.y, PAGE_W - MARGIN * 2 - 10, 28, '#DFE6E9');
+          doc.fontSize(12).fillColor(DARK_TEXT).text(`Day ${idx + 1}  -  ${currentDate}`, MARGIN + 16, doc.y + 7);
+          doc.y += 36;
+        }
+
+        if (doc.y > PAGE_H - 120) doc.addPage();
+        const sTime = item.start_time ? new Date(item.start_time).toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit' }) : '--:--';
+        const eTime = item.end_time ? new Date(item.end_time).toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit' }) : '--:--';
+
+        const boxY = doc.y;
+        drawRoundedBox(doc, MARGIN + 20, boxY, PAGE_W - MARGIN * 2 - 40, item.notes || item.description ? 70 : 50, WHITE);
+        doc.rect(MARGIN + 20, boxY, 5, 70).fill(PRIMARY_COLOR);
+        doc.fontSize(13).fillColor(DARK_TEXT).text(`${item.name || item.dest_name || 'Untitled'}`, MARGIN + 34, boxY + 8, { width: PAGE_W - MARGIN * 2 - 80 });
+        doc.fontSize(10).fillColor(LIGHT_TEXT).text(`${sTime} - ${eTime}${item.duration_minutes ? `  (${item.duration_minutes} min)` : ''}`, MARGIN + 34, boxY + 26, { width: PAGE_W - MARGIN * 2 - 80 });
+        if (item.address || item.dest_name) {
+          doc.fontSize(9).fillColor(LIGHT_TEXT).text(`\u{1F4CD} ${item.address || item.dest_name}`, MARGIN + 34, boxY + 42, { width: PAGE_W - MARGIN * 2 - 80 });
+        }
+        if (item.notes) {
+          doc.fontSize(9).fillColor('#B2BEC3').text(item.notes, MARGIN + 34, boxY + 55, { width: PAGE_W - MARGIN * 2 - 80 });
+        }
+        if (item.locked) {
+          doc.fontSize(9).fillColor(ACCENT_COLOR).text('\u{1F512} Locked', PAGE_W - MARGIN - 80, boxY + 8);
+        }
+        doc.y = boxY + (item.notes || item.description ? 76 : 56);
+      });
+
+      doc.y += 10;
+      const walkDist = timelineItems.reduce((sum: number, item: any) => sum + (item.walking_distance_meters || 0), 0);
+      if (walkDist > 0) {
+        drawRoundedBox(doc, MARGIN + 20, doc.y, PAGE_W - MARGIN * 2 - 40, 30, '#DFE6E9');
+        doc.fontSize(11).fillColor(DARK_TEXT).text(`Total walking distance: ${(walkDist / 1000).toFixed(1)} km`, MARGIN + 34, doc.y + 8);
+        doc.y += 38;
+      }
+    }
+
+    // === Section 3: Destinations & Map ===
+    doc.addPage();
+    addSectionHeader(doc, 'Destinations & Map', '\u{1F4CD}');
+
+    const allLocations = [
+      ...destinations.map((d: any) => ({ name: d.name, lat: d.latitude, lng: d.longitude, type: 'destination', address: d.address, notes: d.notes })),
+      ...customPins.map((p: any) => ({ name: p.name, lat: p.latitude, lng: p.longitude, type: p.type, address: p.address, notes: p.description }))
+    ].filter((loc) => loc.lat && loc.lng);
+
+    if (allLocations.length > 0) {
+      const mapBoxY = doc.y;
+      const mapBoxH = 200;
+      drawRoundedBox(doc, MARGIN, mapBoxY, PAGE_W - MARGIN * 2, mapBoxH, '#DFE6E9');
+      doc.fontSize(11).fillColor(LIGHT_TEXT).text('Map View - Coordinates Reference', MARGIN + 16, mapBoxY + 10);
+
+      const lats = allLocations.map((l) => l.lat);
+      const lngs = allLocations.map((l) => l.lng);
+      const minLat = Math.min(...lats);
+      const maxLat = Math.max(...lats);
+      const minLng = Math.min(...lngs);
+      const maxLng = Math.max(...lngs);
+      const padLat = (maxLat - minLat) * 0.1 || 0.01;
+      const padLng = (maxLng - minLng) * 0.1 || 0.01;
+
+      const innerX = MARGIN + 20;
+      const innerY = mapBoxY + 30;
+      const innerW = PAGE_W - MARGIN * 2 - 40;
+      const innerH = mapBoxH - 45;
+
+      allLocations.forEach((loc, i) => {
+        const px = innerX + ((loc.lng - minLng + padLng) / (maxLng - minLng + padLng * 2)) * innerW;
+        const py = innerY + innerH - ((loc.lat - minLat + padLat) / (maxLat - minLat + padLat * 2)) * innerH;
+        doc.save();
+        doc.circle(px, py, 5).fill(ACCENT_COLOR);
+        doc.restore();
+        doc.fontSize(7).fillColor(DARK_TEXT).text(`${i + 1}`, px - 4, py + 7, { width: 60 });
+      });
+
+      doc.y = mapBoxY + mapBoxH + 15;
+
+      allLocations.forEach((loc, idx) => {
+        if (doc.y > PAGE_H - 100) doc.addPage();
+        const rowY = doc.y;
+        drawRoundedBox(doc, MARGIN + 10, rowY, 26, 26, PRIMARY_COLOR);
+        doc.fontSize(12).fillColor(WHITE).text(`${idx + 1}`, MARGIN + 16, rowY + 6, { width: 16, align: 'center' });
+        doc.fontSize(12).fillColor(DARK_TEXT).text(loc.name, MARGIN + 46, rowY + 2, { width: PAGE_W - MARGIN * 2 - 200 });
+        doc.fontSize(9).fillColor(LIGHT_TEXT).text(`${loc.lat.toFixed(4)}, ${loc.lng.toFixed(4)}`, MARGIN + 46, rowY + 18, { width: PAGE_W - MARGIN * 2 - 200 });
+        doc.fontSize(9).fillColor(LIGHT_TEXT).text(safeStr(loc.type, ''), PAGE_W - MARGIN - 100, rowY + 5, { width: 90, align: 'right' });
+        if (loc.address) {
+          doc.fontSize(9).fillColor('#B2BEC3').text(loc.address, MARGIN + 46, rowY + 30, { width: PAGE_W - MARGIN * 2 - 60 });
+          doc.y = rowY + 44;
+        } else {
+          doc.y = rowY + 32;
+        }
+      });
+
+      doc.y += 10;
+      doc.fontSize(10).fillColor(LIGHT_TEXT).text(`Google Maps: https://www.google.com/maps/dir/${allLocations.map(l => `${l.lat},${l.lng}`).join('/')}`, MARGIN + 10, doc.y, { width: PAGE_W - MARGIN * 2 - 20 });
+    } else {
+      doc.fontSize(12).fillColor(LIGHT_TEXT).text('No destinations with coordinates.', MARGIN + 20, doc.y + 20);
+    }
+
+    // === Section 4: Bookings & Tickets ===
+    doc.addPage();
+    addSectionHeader(doc, 'Bookings & Tickets', '\u{1F3AB}');
+
+    if (bookings.length === 0 && digitalTickets.length === 0) {
+      doc.fontSize(12).fillColor(LIGHT_TEXT).text('No bookings or tickets.', MARGIN + 20, doc.y + 20);
+    } else {
+      if (bookings.length > 0) {
+        doc.fontSize(13).fillColor(DARK_TEXT).text('Bookings', MARGIN + 10);
+        doc.y += 5;
+        const typeIcons: Record<string, string> = { flight: '\u2708\uFE0F', hotel: '\u{1F3E8}', activity: '\u{1F3AF}', restaurant: '\u{1F37D}\uFE0F' };
+        bookings.forEach((booking: any) => {
+          if (doc.y > PAGE_H - 120) doc.addPage();
+          const bY = doc.y;
+          const statusColor = booking.status === 'confirmed' ? '#00B894' : booking.status === 'cancelled' ? '#D63031' : '#FDCB6E';
+          drawRoundedBox(doc, MARGIN + 10, bY, PAGE_W - MARGIN * 2 - 20, booking.notes ? 85 : 65, WHITE);
+          doc.rect(MARGIN + 10, bY, 5, 85).fill(statusColor);
+          doc.fontSize(13).fillColor(DARK_TEXT).text(`${typeIcons[booking.type] || '\u{1F4CB}'} ${booking.title}`, MARGIN + 26, bY + 8, { width: PAGE_W - MARGIN * 2 - 50 });
+          doc.fontSize(10).fillColor(LIGHT_TEXT).text(`${safeStr(booking.date)}  |  ${safeStr(booking.start_time)} - ${safeStr(booking.end_time)}`, MARGIN + 26, bY + 26);
+          doc.fontSize(10).fillColor(LIGHT_TEXT).text(`Location: ${safeStr(booking.location)}`, MARGIN + 26, bY + 42);
+          if (booking.cost) {
+            doc.fontSize(10).fillColor(ACCENT_COLOR).text(formatCurrency(booking.cost, booking.currency || 'JPY'), PAGE_W - MARGIN - 110, bY + 8, { width: 100, align: 'right' });
+          }
+          if (booking.booking_ref) {
+            doc.fontSize(9).fillColor('#B2BEC3').text(`Ref: ${booking.booking_ref}`, MARGIN + 26, bY + 58);
+          }
+          if (booking.notes) {
+            doc.fontSize(9).fillColor('#B2BEC3').text(`Note: ${booking.notes}`, MARGIN + 26, bY + 72, { width: PAGE_W - MARGIN * 2 - 50 });
+          }
+          doc.y = bY + (booking.notes ? 92 : 72);
+        });
+      }
+
+      if (digitalTickets.length > 0) {
+        doc.y += 10;
+        doc.fontSize(13).fillColor(DARK_TEXT).text('Digital Tickets', MARGIN + 10);
+        doc.y += 5;
+        digitalTickets.forEach((ticket: any) => {
+          if (doc.y > PAGE_H - 100) doc.addPage();
+          const tY = doc.y;
+          const validColor = ticket.status === 'active' ? '#00B894' : '#B2BEC3';
+          drawRoundedBox(doc, MARGIN + 10, tY, PAGE_W - MARGIN * 2 - 20, 55, WHITE);
+          doc.rect(MARGIN + 10, tY, 5, 55).fill(validColor);
+          doc.fontSize(12).fillColor(DARK_TEXT).text(`\u{1F39F}\uFE0F ${ticket.ticket_name}`, MARGIN + 26, tY + 8);
+          doc.fontSize(9).fillColor(LIGHT_TEXT).text(`${ticket.ticket_type} | Provider: ${safeStr(ticket.provider_name)}`, MARGIN + 26, tY + 26);
+          doc.fontSize(9).fillColor(LIGHT_TEXT).text(`Valid: ${safeStr(ticket.valid_from)} ~ ${safeStr(ticket.valid_until)}`, MARGIN + 26, tY + 40);
+          if (ticket.ticket_number) {
+            doc.fontSize(9).fillColor(PRIMARY_COLOR).text(`#${ticket.ticket_number}`, PAGE_W - MARGIN - 110, tY + 10, { width: 100, align: 'right' });
+          }
+          doc.y = tY + 62;
+        });
+      }
+    }
+
+    // === Section 5: Transportation ===
+    doc.addPage();
+    addSectionHeader(doc, 'Transportation', '\u{1F686}');
+
+    if (transportModes.length === 0 && transportSegments.length === 0) {
+      doc.fontSize(12).fillColor(LIGHT_TEXT).text('No transportation data.', MARGIN + 20, doc.y + 20);
+    } else {
+      if (transportModes.length > 0) {
+        doc.fontSize(12).fillColor(DARK_TEXT).text('Available Modes', MARGIN + 10);
+        doc.y += 5;
+        const modeIcons: Record<string, string> = { walking: '\u{1F6B6}', public: '\u{1F68C}', taxi: '\u{1F695}', bike: '\u{1F6B2}', car: '\u{1F697}', train: '\u{1F683}', bus: '\u{1F68C}', ferry: '\u{26F4}\uFE0F' };
+        transportModes.forEach((mode: any) => {
+          if (doc.y > PAGE_H - 80) doc.addPage();
+          const mY = doc.y;
+          drawRoundedBox(doc, MARGIN + 10, mY, PAGE_W - MARGIN * 2 - 20, 40, '#F8F9FA');
+          doc.fontSize(12).fillColor(DARK_TEXT).text(`${modeIcons[mode.type] || '\u{1F697}'} ${mode.name}`, MARGIN + 20, mY + 5);
+          doc.fontSize(9).fillColor(LIGHT_TEXT).text(`${mode.type} | Cost: ${mode.cost_per_km}/km | Reliability: ${((mode.reliability_score || 1) * 100).toFixed(0)}%`, MARGIN + 20, mY + 22);
+          doc.y = mY + 46;
+        });
+      }
+
+      if (transportSegments.length > 0) {
+        doc.y += 10;
+        doc.fontSize(12).fillColor(DARK_TEXT).text('Route Segments', MARGIN + 10);
+        doc.y += 5;
+        transportSegments.forEach((seg: any, idx: number) => {
+          if (doc.y > PAGE_H - 80) doc.addPage();
+          const sY = doc.y;
+          drawRoundedBox(doc, MARGIN + 20, sY, 30, 30, PRIMARY_COLOR);
+          doc.fontSize(11).fillColor(WHITE).text(`${idx + 1}`, MARGIN + 27, sY + 8, { width: 18, align: 'center' });
+          doc.fontSize(11).fillColor(DARK_TEXT).text(`${seg.mode_name || 'Transport'}`, MARGIN + 60, sY + 4);
+          doc.fontSize(9).fillColor(LIGHT_TEXT).text(`Duration: ${seg.duration_minutes || '--'} min | Distance: ${(seg.distance_meters / 1000).toFixed(1)} km`, MARGIN + 60, sY + 20);
+          if (seg.cost) {
+            doc.fontSize(10).fillColor(ACCENT_COLOR).text(formatCurrency(seg.cost), PAGE_W - MARGIN - 100, sY + 6, { width: 90, align: 'right' });
+          }
+          doc.y = sY + 38;
+        });
+      }
+    }
+
+    // === Section 6: Expense Summary ===
+    doc.addPage();
+    addSectionHeader(doc, 'Expense Summary', '\u{1F4B0}');
+
+    if (expenses.length === 0) {
+      doc.fontSize(12).fillColor(LIGHT_TEXT).text('No expenses recorded.', MARGIN + 20, doc.y + 20);
+    } else {
+      const categoryTotals: Record<string, { amount: number; currency: string; icon: string; count: number }> = {};
+      let grandTotal = 0;
+      expenses.forEach((exp: any) => {
+        const cat = exp.category_name || 'Other';
+        if (!categoryTotals[cat]) {
+          categoryTotals[cat] = { amount: 0, currency: exp.currency || 'TWD', icon: exp.category_icon || '\u{1F4B0}', count: 0 };
+        }
+        categoryTotals[cat].amount += exp.amount || 0;
+        categoryTotals[cat].count += 1;
+        grandTotal += exp.amount || 0;
+      });
+
+      doc.fontSize(12).fillColor(DARK_TEXT).text('Category Breakdown', MARGIN + 10);
+      doc.y += 5;
+      Object.entries(categoryTotals).forEach(([catName, data]) => {
+        if (doc.y > PAGE_H - 80) doc.addPage();
+        const cY = doc.y;
+        drawRoundedBox(doc, MARGIN + 10, cY, PAGE_W - MARGIN * 2 - 20, 36, '#F8F9FA');
+        const barW = Math.min((data.amount / grandTotal) * (PAGE_W - MARGIN * 2 - 100), PAGE_W - MARGIN * 2 - 100);
+        doc.save();
+        doc.rect(MARGIN + 10, cY + 30, barW, 4).fill(PRIMARY_COLOR);
+        doc.restore();
+        doc.fontSize(11).fillColor(DARK_TEXT).text(`${data.icon} ${catName}`, MARGIN + 20, cY + 5);
+        doc.fontSize(10).fillColor(ACCENT_COLOR).text(formatCurrency(data.amount, data.currency), PAGE_W - MARGIN - 110, cY + 5, { width: 100, align: 'right' });
+        doc.fontSize(8).fillColor(LIGHT_TEXT).text(`${data.count} items`, MARGIN + 20, cY + 20);
+        doc.y = cY + 42;
+      });
+
+      doc.y += 10;
+      drawRoundedBox(doc, MARGIN + 10, doc.y, PAGE_W - MARGIN * 2 - 20, 40, DARK_TEXT);
+      doc.fontSize(14).fillColor(WHITE).text('Grand Total', MARGIN + 20, doc.y + 10);
+      doc.fontSize(14).fillColor(ACCENT_COLOR).text(`${grandTotal.toLocaleString()}`, PAGE_W - MARGIN - 150, doc.y + 10, { width: 140, align: 'right' });
+      doc.y += 50;
+
+      doc.fontSize(12).fillColor(DARK_TEXT).text('Recent Expenses', MARGIN + 10);
+      doc.y += 5;
+      expenses.slice(0, 15).forEach((exp: any) => {
+        if (doc.y > PAGE_H - 70) doc.addPage();
+        const eY = doc.y;
+        doc.fontSize(10).fillColor(DARK_TEXT).text(`${exp.category_icon || '\u{1F4B0}'} ${exp.description}`, MARGIN + 20, eY);
+        doc.fontSize(9).fillColor(LIGHT_TEXT).text(`${safeStr(exp.expense_date)} | ${safeStr(exp.location, '')}`, MARGIN + 20, eY + 14);
+        doc.fontSize(10).fillColor(ACCENT_COLOR).text(formatCurrency(exp.amount, exp.currency || 'TWD'), PAGE_W - MARGIN - 110, eY + 2, { width: 100, align: 'right' });
+        doc.y = eY + 32;
+      });
+    }
+
+    // === Section 7: Travel Companions ===
+    doc.addPage();
+    addSectionHeader(doc, 'Travel Companions', '\u{1F465}');
+
+    if (collaborators.length === 0) {
+      doc.fontSize(12).fillColor(LIGHT_TEXT).text('No travel companions.', MARGIN + 20, doc.y + 20);
+    } else {
+      collaborators.forEach((collab: any) => {
+        if (doc.y > PAGE_H - 80) doc.addPage();
+        const cY = doc.y;
+        drawRoundedBox(doc, MARGIN + 10, cY, PAGE_W - MARGIN * 2 - 20, 50, '#F8F9FA');
+        doc.save();
+        doc.circle(MARGIN + 35, cY + 25, 15).fill(PRIMARY_COLOR);
+        doc.restore();
+        doc.fontSize(12).fillColor(WHITE).text((collab.name || '?')[0].toUpperCase(), MARGIN + 28, cY + 18, { width: 16, align: 'center' });
+        doc.fontSize(13).fillColor(DARK_TEXT).text(collab.name || 'Unknown', MARGIN + 58, cY + 8);
+        doc.fontSize(10).fillColor(LIGHT_TEXT).text(`Role: ${collab.role} | Email: ${safeStr(collab.email)}`, MARGIN + 58, cY + 26);
+        doc.y = cY + 58;
+      });
+    }
+
+    // === Section 8: Emergency Info ===
+    doc.addPage();
+    addSectionHeader(doc, 'Emergency Information', '\u{1F198}');
+
+    drawRoundedBox(doc, MARGIN, doc.y, PAGE_W - MARGIN * 2, 80, '#FF7675');
+    doc.fontSize(14).fillColor(WHITE).text('Emergency Numbers', MARGIN + 16, doc.y + 8);
+    doc.fontSize(12).fillColor(WHITE).text('Police: 110  |  Ambulance: 119  |  Fire: 118', MARGIN + 16, doc.y + 26);
+    doc.fontSize(10).fillColor('#FADADD').text('Japan Tourist Hotline: +81-50-3816-2787 (Multilingual)', MARGIN + 16, doc.y + 44);
+    doc.y += 90;
+
+    if (trip.destination) {
+      doc.fontSize(11).fillColor(DARK_TEXT).text(`Emergency services for ${trip.destination}:`, MARGIN + 10);
+      doc.y += 5;
+      const emergencyTips: Record<string, string[]> = {
+        'japan': ['Police: 110', 'Ambulance/Fire: 119', 'Japan Tourism Agency: +81-3-5329-1200'],
+        'korea': ['Police: 112', 'Ambulance/Fire: 119', 'Korea Tourism: 1330'],
+      };
+      const destLower = (trip.destination || '').toLowerCase();
+      const tips = emergencyTips[destLower] || ['Check local emergency numbers'];
+      tips.forEach(tip => {
+        doc.fontSize(10).fillColor(LIGHT_TEXT).text(`  - ${tip}`, MARGIN + 16);
+        doc.y += 3;
+      });
+    }
+
+    if (emergencyContacts.length > 0) {
+      doc.y += 10;
+      doc.fontSize(12).fillColor(DARK_TEXT).text('Personal Emergency Contacts', MARGIN + 10);
+      doc.y += 5;
+      emergencyContacts.forEach((contact: any) => {
+        if (doc.y > PAGE_H - 80) doc.addPage();
+        const ecY = doc.y;
+        drawRoundedBox(doc, MARGIN + 10, ecY, PAGE_W - MARGIN * 2 - 20, 38, '#F8F9FA');
+        doc.fontSize(11).fillColor(DARK_TEXT).text(`${contact.name} (${contact.relationship})`, MARGIN + 20, ecY + 5);
+        doc.fontSize(10).fillColor(PRIMARY_COLOR).text(`${safeStr(contact.country_code, '+886')}${contact.phone}`, MARGIN + 20, ecY + 20);
+        if (contact.email) {
+          doc.fontSize(9).fillColor(LIGHT_TEXT).text(contact.email, PAGE_W - MARGIN - 180, ecY + 8, { width: 170, align: 'right' });
+        }
+        doc.y = ecY + 44;
+      });
+    }
+
+    // === Footer on each page ===
+    const totalPages = doc.bufferedPageRange().count;
+    for (let i = 0; i < totalPages; i++) {
+      doc.switchToPage(i);
+      if (i === 0) continue;
+      doc.save();
+      doc.fontSize(8).fillColor('#B2BEC3');
+      doc.text(`ZenVoyage Travel Handbook  |  ${trip.name}`, MARGIN, PAGE_H - 30, { width: PAGE_W / 2 });
+      doc.text(`Page ${i + 1} of ${totalPages}`, PAGE_W / 2, PAGE_H - 30, { width: PAGE_W / 2 - MARGIN, align: 'right' });
+      doc.restore();
+    }
+
+    doc.end();
+
+    stream.on('finish', () => {
+      res.download(pdfPath, `ZenVoyage-${(trip.name || 'Travel').replace(/[^a-zA-Z0-9\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff]/g, '_')}-Handbook.pdf`, (err) => {
+        if (err) {
+          console.error('PDF download error:', err);
+          if (!res.headersSent) res.status(500).json({ error: 'Failed to download PDF' });
+        }
+        try { if (fs.existsSync(pdfPath)) fs.unlinkSync(pdfPath); } catch {}
+      });
+    });
+
+  } catch (error) {
+    console.error('PDF export error:', error);
+    if (!res.headersSent) res.status(500).json({ error: error instanceof Error ? error.message : 'Internal server error' });
+  }
+});
+
+// F49: AI 對話式行程修改
+interface AIModifyRequest {
+  message: string;
+  context?: {
+    trip_name?: string;
+    current_timeline?: any[];
+    destinations?: any[];
+    preferences?: any;
+  };
+}
+
+interface AIModifyResponse {
+  response: string;
+  suggestions?: Array<{
+    type: 'timeline' | 'destination' | 'transportation' | 'preference';
+    action: string;
+    details: any;
+  }>;
+  confidence?: number;
+}
+
+/**
+ * POST /api/trips/:id/ai-modify - AI-powered itinerary modification
+ */
+app.post('/api/trips/:id/ai-modify', async (req, res) => {
+  try {
+    console.log('AI modification requested for trip:', req.params.id);
+    
+    const user = getCurrentUser(req) as any;
+    const { message, context } = req.body as AIModifyRequest;
+    
+    if (!message || message.trim().length === 0) {
+      return res.status(400).json({ error: 'Message is required' });
+    }
+
+    const db = getDatabase();
+    const tripId = req.params.id;
+
+    // Verify trip ownership and existence
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(tripId, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    // Get current trip data for context
+    const tripData = {
+      trip_name: (trip as any).name,
+      destinations: db.prepare('SELECT * FROM destinations WHERE trip_id = ?').all(tripId),
+      timeline_items: db.prepare(`
+        SELECT ti.*, d.name as destination_name 
+        FROM timeline_items ti 
+        LEFT JOIN destinations d ON ti.destination_id = d.id 
+        WHERE ti.trip_id = ? 
+        ORDER BY ti.start_time ASC
+      `).all(tripId),
+      transportation_modes: db.prepare('SELECT * FROM transportation_modes WHERE trip_id = ?').all(tripId),
+      preferences: {
+        timezone: (trip as any).timezone,
+        base_location: (trip as any).base_location,
+        transportation_preferences: db.prepare('SELECT * FROM transport_preferences WHERE user_id = ?').all(user.id)
+      }
+    };
+
+    // Build AI prompt with context
+    const systemPrompt = `你是一個專業的旅遊規劃助手，名為 ZenVoyage AI。你的任務是幫助用戶修改和優化他們的旅遊行程。
+
+用戶當前的行程信息：
+- 行程名稱: ${(trip as any).name}
+- 目的地數量: ${tripData.destinations.length} 個
+- 行程項目數量: ${tripData.timeline_items.length} 個
+- 交通方式數量: ${tripData.transportation_modes.length} 種
+
+請根據用戶的自然語言請求，提供智能的行程修改建議。你可以：
+1. 添加或刪除行程項目
+2. 調整時間安排
+3. 推薦新的目的地
+4. 建議交通方式
+5. 調整停留時間
+6. 提供其他相關建議
+
+請用繁體中文回應，並保持專業和友好的語氣。如果需要特定的修改，請提供具體的建議和原因。
+
+用戶請求：${message}`;
+
+    // Simulate AI response (in real implementation, this would call an actual AI service)
+    const aiResponse = await simulateAIResponse(systemPrompt, message, tripData);
+
+    // Save conversation to database
+    try {
+      const conversationStmt = db.prepare(`
+        INSERT OR REPLACE INTO ai_conversations 
+        (trip_id, user_message, ai_response, created_at) 
+        VALUES (?, ?, ?, ?)
+      `);
+      conversationStmt.run(tripId, message, JSON.stringify(aiResponse), new Date().toISOString());
+    } catch (error) {
+      console.log('Failed to save AI conversation:', error);
+    }
+
+    // Return AI response
+    res.json({
+      success: true,
+      response: (aiResponse as any).response,
+      suggestions: (aiResponse as any).suggestions || [],
+      confidence: (aiResponse as any).confidence || 0.8,
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error: any) {
+    console.error('AI modification error:', error);
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+/**
+ * GET /api/trips/:id/ai-conversation - Get AI conversation history
+ */
+app.get('/api/trips/:id/ai-conversation', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const tripId = req.params.id;
+    const db = getDatabase();
+
+    // Verify trip ownership and existence
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(tripId, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    // Get conversation history
+    const conversations = db.prepare(`
+      SELECT * FROM ai_conversations 
+      WHERE trip_id = ? 
+      ORDER BY created_at DESC 
+      LIMIT 50
+    `).all(tripId);
+
+    // Format messages for frontend
+    const messages = (conversations as any[]).map(conv => ({
+      id: (conv as any).id,
+      type: 'ai',
+      content: (conv as any).response,
+      timestamp: (conv as any).created_at,
+      user_message: (conv as any).message,
+      suggestions: (conv as any).suggestions ? JSON.parse((conv as any).suggestions) : [],
+    }));
+
+    res.json({
+      messages,
+      total_count: messages.length
+    });
+
+  } catch (error: any) {
+    console.error('AI conversation history error:', error);
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// Serve Flutter Web static files only for non-API requests
+
+// Helper function to simulate AI response
+async function simulateAIResponse(systemPrompt: string, userMessage: string, tripData: any): Promise<AIModifyResponse> {
+  // Simple simulation - in production, this would call an actual AI service like OpenAI, Claude, etc.
+  const lowerMessage = userMessage.toLowerCase();
+  
+  let response = '';
+  let suggestions: AIModifyResponse['suggestions'] = [];
+  let confidence = 0.8;
+
+  if (lowerMessage.includes('增加') || lowerMessage.includes('添加') || lowerMessage.includes('新增')) {
+    response = `我了解您想要增加新的行程項目。根據您的需求，我建議可以在您現有的行程中添加一些有趣的活動或景點。`;
+    suggestions = [{
+      type: 'timeline',
+      action: 'add',
+      details: {
+        title: '推薦新增活動',
+        description: '根據您的喜好推薦',
+        estimated_time: '2-3小時',
+        priority: 'medium'
+      }
+    }];
+    confidence = 0.9;
+  } 
+  else if (lowerMessage.includes('調整') || lowerMessage.includes('修改') || lowerMessage.includes('變更')) {
+    response = `我理解您想要調整行程。讓我為您提供一些時間安排上的建議，讓您的行程更加合理和舒適。`;
+    suggestions = [{
+      type: 'timeline',
+      action: 'modify',
+      details: {
+        title: '時間優化建議',
+        description: '根據交通便利性調整',
+        estimated_time: '30分鐘',
+        priority: 'high'
+      }
+    }];
+    confidence = 0.85;
+  }
+  else if (lowerMessage.includes('刪除') || lowerMessage.includes('移除') || lowerMessage.includes('不要')) {
+    response = `我了解您想要移除某些行程項目。讓我幫您分析哪些項目可以安全移除而不影響整體行程體驗。`;
+    suggestions = [{
+      type: 'timeline',
+      action: 'remove',
+      details: {
+        title: '行程項目移除建議',
+        description: '低優先級項目可移除',
+        estimated_time: '節省1-2小時',
+        priority: 'low'
+      }
+    }];
+    confidence = 0.8;
+  }
+  else if (lowerMessage.includes('推薦') || lowerMessage.includes('建議') || lowerMessage.includes('有什麼')) {
+    response = `根據您當前的行程目的地和偏好，我為您推薦一些值得一遊的景點和活動。`;
+    suggestions = [{
+      type: 'destination',
+      action: 'recommend',
+      details: {
+        title: '景點推薦',
+        description: '根據您的興趣推薦',
+        estimated_time: '半天',
+        priority: 'medium'
+      }
+    }];
+    confidence = 0.9;
+  }
+  else {
+    response = `我理解您想要修改行程。為了更好地幫助您，請告訴我具體想要修改什麼？例如：
+- 想要添加哪些活動或景點？
+- 希望調整時間安排？
+- 想要移除某些行程項目？
+- 需要交通方式建議？`;
+    suggestions = [{
+      type: 'preference',
+      action: 'clarify',
+      details: {
+        title: '需要更多資訊',
+        description: '請提供具體修改需求',
+        estimated_time: '15分鐘',
+        priority: 'low'
+      }
+    }];
+    confidence = 0.7;
+  }
+
+  return { response, suggestions, confidence };
+});
+
+/**
+ * F50: GET /api/trips/:id/memories - Generate automatic travel memories based on GPS tracks and photos
+ */
+app.get('/api/trips/:id/memories', async (req, res) => {
+  try {
+    console.log('Travel memories requested for trip:', req.params.id);
+    
+    const user = getCurrentUser(req) as any;
+    const tripId = req.params.id;
+
+    // Verify trip ownership and existence
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(tripId, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    // Get GPS tracking data
+    const gpsData = db.prepare(`
+      SELECT gl.*, g.device_id, g.accuracy, g.timestamp as gps_timestamp
+      FROM gps_locations gl
+      JOIN gps_tracking g ON gl.tracking_session_id = g.id
+      WHERE g.trip_id = ?
+      ORDER BY gl.timestamp ASC
+    `).all(tripId);
+
+    // Get memory photos
+    const memoryPhotos = db.prepare(`
+      SELECT mp.*, p.file_path, p.description, p.taken_at
+      FROM memory_photos mp
+      JOIN photos p ON mp.photo_id = p.id
+      WHERE mp.trip_id = ?
+      ORDER BY mp.created_at DESC
+    `).all(tripId);
+
+    // Generate memory segments based on GPS clusters
+    const memorySegments = generateMemorySegments(gpsData, memoryPhotos);
+
+    // Get popular destinations visited
+    const destinations = db.prepare(`
+      SELECT d.*, COUNT(*) as visit_count
+      FROM destinations d
+      LEFT JOIN timeline_items ti ON d.id = ti.destination_id
+      WHERE d.trip_id = ?
+      GROUP BY d.id
+      ORDER BY visit_count DESC
+    `).all(tripId);
+
+    // Format response for frontend
+    const memories = {
+      trip_name: trip.name,
+      total_distance: calculateTotalDistance(gpsData),
+      total_duration: calculateTotalDuration(gpsData),
+      memory_segments: memorySegments,
+      popular_destinations: destinations.slice(0, 5),
+      total_photos: memoryPhotos.length,
+      generated_at: new Date().toISOString()
+    };
+
+    res.json({
+      success: true,
+      memories,
+      summary: generateMemorySummary(memories)
+    });
+
+  } catch (error: any) {
+    console.error('Travel memories generation error:', error);
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// Helper function to generate memory segments from GPS data
+function generateMemorySegments(gpsData: any[], photos: any[]): Array<{
+  id: string;
+  title: string;
+  description: string;
+  location: string;
+  start_time: string;
+  end_time: string;
+  duration: string;
+  distance: number;
+  photos_count: number;
+  coordinates: { lat: number; lng: number };
+}> {
+  const segments = [];
+  
+  if (gpsData.length === 0) {
+    return [{
+      id: 'no-data',
+      title: '尚無足跡數據',
+      description: '請先開啟GPS追蹤功能來記錄您的足跡',
+      location: '未知',
+      start_time: new Date().toISOString(),
+      end_time: new Date().toISOString(),
+      duration: '0分鐘',
+      distance: 0,
+      photos_count: photos.length,
+      coordinates: { lat: 0, lng: 0 }
+    }];
+  }
+
+  // Simple clustering: group GPS points by time proximity (1 hour gaps)
+  let currentSegment = [];
+  let segmentId = 1;
+
+  for (let i = 0; i < gpsData.length; i++) {
+    const currentPoint = gpsData[i];
+    
+    if (currentSegment.length === 0) {
+      currentSegment.push(currentPoint);
+    } else {
+      const lastPoint = currentSegment[currentSegment.length - 1];
+      const timeDiff = new Date(currentPoint.timestamp).getTime() - new Date(lastPoint.timestamp).getTime();
+      
+      // If gap is more than 1 hour, create new segment
+      if (timeDiff > 60 * 60 * 1000) {
+        if (currentSegment.length > 0) {
+          segments.push(createMemorySegment(currentSegment, photos, segmentId));
+          segmentId++;
+        }
+        currentSegment = [currentPoint];
+      } else {
+        currentSegment.push(currentPoint);
+      }
+    }
+  }
+
+  // Add the last segment
+  if (currentSegment.length > 0) {
+    segments.push(createMemorySegment(currentSegment, photos, segmentId));
+  }
+
+  return segments;
+}
+
+function createMemorySegment(points: any[], photos: any[], segmentId: number) {
+  const startTime = points[0].timestamp;
+  const endTime = points[points.length - 1].timestamp;
+  const duration = new Date(endTime).getTime() - new Date(startTime).getTime();
+  
+  // Calculate average position
+  const avgLat = points.reduce((sum, p) => sum + p.latitude, 0) / points.length;
+  const avgLng = points.reduce((sum, p) => sum + p.longitude, 0) / points.length;
+  
+  // Find photos in this time range
+  const segmentPhotos = photos.filter(photo => {
+    const photoTime = new Date(photo.taken_at).getTime();
+    return photoTime >= new Date(startTime).getTime() && photoTime <= new Date(endTime).getTime();
+  });
+
+  return {
+    id: `segment-${segmentId}`,
+    title: `第 ${segmentId} 段足跡`,
+    description: `在這段時間內您探索了 ${points.length} 個位置`,
+    location: `(${avgLat.toFixed(4)}, ${avgLng.toFixed(4)})`,
+    start_time: startTime,
+    end_time: endTime,
+    duration: `${Math.round(duration / (60 * 1000))} 分鐘`,
+    distance: calculateSegmentDistance(points),
+    photos_count: segmentPhotos.length,
+    coordinates: { lat: avgLat, lng: avgLng }
+  };
+}
+
+function calculateTotalDistance(gpsData: any[]): number {
+  if (gpsData.length < 2) return 0;
+  
+  let total = 0;
+  for (let i = 1; i < gpsData.length; i++) {
+    total += calculateDistance(
+      gpsData[i-1].latitude, gpsData[i-1].longitude,
+      gpsData[i].latitude, gpsData[i].longitude
+    );
+  }
+  return total;
+}
+
+function calculateSegmentDistance(points: any[]): number {
+  if (points.length < 2) return 0;
+  
+  let total = 0;
+  for (let i = 1; i < points.length; i++) {
+    total += calculateDistance(
+      points[i-1].latitude, points[i-1].longitude,
+      points[i].latitude, points[i].longitude
+    );
+  }
+  return total;
+}
+
+function calculateDistance(lat1: number, lng1: number, lat2: number, lng2: number): number {
+  const R = 6371; // Earth's radius in kilometers
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLng = (lng2 - lng1) * Math.PI / 180;
+  const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+    Math.sin(dLng/2) * Math.sin(dLng/2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+  return R * c;
+}
+
+function calculateTotalDuration(gpsData: any[]): string {
+  if (gpsData.length === 0) return '0分鐘';
+  
+  const startTime = new Date(gpsData[0].timestamp).getTime();
+  const endTime = new Date(gpsData[gpsData.length - 1].timestamp).getTime();
+  const duration = endTime - startTime;
+  
+  const hours = Math.floor(duration / (1000 * 60 * 60));
+  const minutes = Math.round((duration % (1000 * 60 * 60)) / (1000 * 60));
+  
+  if (hours > 0) {
+    return `${hours}小時${minutes}分鐘`;
+  }
+  return `${minutes}分鐘`;
+}
+
+function generateMemorySummary(memories: any): string {
+  const segments = memories.memory_segments.length;
+  const distance = memories.total_distance.toFixed(2);
+  const duration = memories.total_duration;
+  const photos = memories.total_photos;
+  const destinations = memories.popular_destinations.length;
+  
+  return `您這次的 ${memories.trip_name} 行程總共記錄了 ${segments} 段足跡，總距離 ${distance} 公里，總共 ${duration}，探索了 ${destinations} 個熱門地點，並拍攝了 ${photos} 張照片。這是一段充滿回憶的旅程！`;
+}
+
+// Serve Flutter Web static files only for non-API requests
+const flutterBuildPath = path.join(__dirname, '../../app/build/web');
+if (fs.existsSync(flutterBuildPath)) {
+  // Serve static files for non-API requests
+  app.use(express.static(flutterBuildPath, { 
+    maxAge: '1h',
+    index: false // Don't serve index.html automatically
+  }));
+  
+  // Fallback to Flutter index.html for non-API requests
+  app.get('*', (req, res) => {
+    // Only serve index.html for non-API requests
+    if (!req.path.startsWith('/api/') && fs.existsSync(path.join(flutterBuildPath, 'index.html'))) {
+      res.sendFile(path.join(flutterBuildPath, 'index.html'));
+    } else {
+      res.status(404).json({ error: 'Not found' });
+    }
+  });
+} else {
+  // Fallback for non-API requests when no build exists
+  app.get('*', (_req, res) => {
+    res.status(404).json({ error: 'Not found' });
+  });
+}
+
+app.listen(PORT, () => {
+  console.log(`🚀 ZenVoyage server running on http://localhost:${PORT}`);
+  console.log(`📊 Health check: http://localhost:${PORT}/api/health`);
+});
+
+
