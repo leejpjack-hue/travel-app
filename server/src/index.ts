@@ -1907,6 +1907,405 @@ function generateInstructions(from: any, to: any, mode: any) {
   return instructions;
 }
 
+// Module 4: POI & Content APIs
+
+// Custom Map Pins (F31) - GET /api/trips/:id/custom-pins
+app.get('/api/trips/:id/custom-pins', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    const pins = db.prepare('SELECT * FROM custom_pins WHERE trip_id = ? ORDER BY created_at DESC').all(req.params.id);
+    res.json({ custom_pins: pins });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// Custom Map Pins (F31) - POST /api/trips/:id/custom-pins
+app.post('/api/trips/:id/custom-pins', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    const { name, type, latitude, longitude, address, description, icon, color, size } = req.body;
+
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    if (!name || !type || !latitude || !longitude) {
+      return res.status(400).json({ error: 'Name, type, latitude, and longitude are required' });
+    }
+
+    const pinId = generateUUID();
+    const now = new Date().toISOString();
+
+    db.prepare(`
+      INSERT INTO custom_pins (id, trip_id, name, type, latitude, longitude, address, description, icon, color, size, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      pinId,
+      req.params.id,
+      name,
+      type,
+      latitude,
+      longitude,
+      address || null,
+      description || null,
+      icon || '📍',
+      color || '#FF5733',
+      size || 20,
+      now,
+      now
+    );
+
+    const pin = db.prepare('SELECT * FROM custom_pins WHERE id = ?').get(pinId);
+    res.status(201).json({
+      message: 'Custom pin created successfully',
+      custom_pin: pin
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// Custom Map Pins (F31) - PUT /api/trips/:id/custom-pins/:pinId
+app.put('/api/trips/:id/custom-pins/:pinId', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    const { name, type, latitude, longitude, address, description, icon, color, size, is_visible } = req.body;
+
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    const existing = db.prepare('SELECT * FROM custom_pins WHERE id = ? AND trip_id = ?').get(req.params.pinId, req.params.id);
+    if (!existing) {
+      return res.status(404).json({ error: 'Custom pin not found' });
+    }
+
+    const now = new Date().toISOString();
+    db.prepare(`
+      UPDATE custom_pins SET 
+        name = COALESCE(?, name),
+        type = COALESCE(?, type),
+        latitude = COALESCE(?, latitude),
+        longitude = COALESCE(?, longitude),
+        address = COALESCE(?, address),
+        description = COALESCE(?, description),
+        icon = COALESCE(?, icon),
+        color = COALESCE(?, color),
+        size = COALESCE(?, size),
+        is_visible = COALESCE(?, is_visible),
+        updated_at = ?
+      WHERE id = ? AND trip_id = ?
+    `).run(
+      name,
+      type,
+      latitude,
+      longitude,
+      address,
+      description,
+      icon,
+      color,
+      size,
+      is_visible,
+      now,
+      req.params.pinId,
+      req.params.id
+    );
+
+    const updatedPin = db.prepare('SELECT * FROM custom_pins WHERE id = ?').get(req.params.pinId);
+    res.json({
+      message: 'Custom pin updated successfully',
+      custom_pin: updatedPin
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// Custom Map Pins (F31) - DELETE /api/trips/:id/custom-pins/:pinId
+app.delete('/api/trips/:id/custom-pins/:pinId', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    const existing = db.prepare('SELECT * FROM custom_pins WHERE id = ? AND trip_id = ?').get(req.params.pinId, req.params.id);
+    if (!existing) {
+      return res.status(404).json({ error: 'Custom pin not found' });
+    }
+
+    // Delete related tag assignments, reviews, and names
+    db.prepare('DELETE FROM poi_tag_assignments WHERE custom_pin_id = ?').run(req.params.pinId);
+    db.prepare('DELETE FROM poi_reviews WHERE custom_pin_id = ?').run(req.params.pinId);
+    db.prepare('DELETE FROM poi_names WHERE custom_pin_id = ?').run(req.params.pinId);
+    db.prepare('DELETE FROM seasonal_alerts WHERE custom_pin_id = ?').run(req.params.pinId);
+    
+    db.prepare('DELETE FROM custom_pins WHERE id = ?').run(req.params.pinId);
+
+    res.json({ message: 'Custom pin deleted successfully' });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// Multi-dimensional Tags (F33) - GET /api/poi-tags
+app.get('/api/poi-tags', (req, res) => {
+  try {
+    const db = getDatabase();
+    const tags = db.prepare('SELECT * FROM poi_tags ORDER BY category, name').all();
+    res.json({ poi_tags: tags });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// Multi-dimensional Tags (F33) - GET /api/trips/:id/poi-tags
+app.get('/api/trips/:id/poi-tags', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    const tags = db.prepare(`
+      SELECT pt.*, pta.custom_pin_id, pta.destination_id
+      FROM poi_tags pt
+      LEFT JOIN poi_tag_assignments pta ON pt.id = pta.tag_id AND pta.trip_id = ?
+      WHERE pta.id IS NOT NULL OR pt.category IN ('cuisine', 'price_range', 'facility')
+      ORDER BY pt.category, pt.name
+    `).all(req.params.id);
+
+    res.json({ poi_tags: tags });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// Multi-dimensional Tags (F33) - POST /api/trips/:id/poi-tags/assign
+app.post('/api/trips/:id/poi-tags/assign', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    const { tag_id, custom_pin_id, destination_id } = req.body;
+
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    if (!tag_id) {
+      return res.status(400).json({ error: 'Tag ID is required' });
+    }
+
+    const tag = db.prepare('SELECT * FROM poi_tags WHERE id = ?').get(tag_id);
+    if (!tag) {
+      return res.status(404).json({ error: 'Tag not found' });
+    }
+
+    // Check if assignment already exists
+    const existing = db.prepare('SELECT * FROM poi_tag_assignments WHERE trip_id = ? AND tag_id = ? AND custom_pin_id = ? AND destination_id = ?').get(
+      req.params.id, tag_id, custom_pin_id || null, destination_id || null
+    );
+
+    if (existing) {
+      return res.status(409).json({ error: 'Tag assignment already exists' });
+    }
+
+    const assignmentId = generateUUID();
+    const now = new Date().toISOString();
+
+    db.prepare(`
+      INSERT INTO poi_tag_assignments (id, trip_id, tag_id, custom_pin_id, destination_id, created_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(assignmentId, req.params.id, tag_id, custom_pin_id, destination_id, now);
+
+    const tagData = tag as any;
+    const assignment = db.prepare('SELECT * FROM poi_tag_assignments WHERE id = ?').get(assignmentId) as any;
+    res.status(201).json({
+      message: 'Tag assigned successfully',
+      tag_assignment: {
+        id: assignment.id,
+        tag_id: assignment.tag_id,
+        tag_name: tagData.name,
+        tag_category: tagData.category,
+        custom_pin_id: assignment.custom_pin_id,
+        destination_id: assignment.destination_id,
+        created_at: assignment.created_at
+      }
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// Multi-dimensional Tags (F33) - DELETE /api/trips/:id/poi-tags/assignment/:assignmentId
+app.delete('/api/trips/:id/poi-tags/assignment/:assignmentId', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    const assignment = db.prepare('SELECT * FROM poi_tag_assignments WHERE id = ? AND trip_id = ?').get(req.params.assignmentId, req.params.id);
+    if (!assignment) {
+      return res.status(404).json({ error: 'Tag assignment not found' });
+    }
+
+    db.prepare('DELETE FROM poi_tag_assignments WHERE id = ?').run(req.params.assignmentId);
+
+    res.json({ message: 'Tag assignment removed successfully' });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// POI Reviews and Notes (F35) - GET /api/trips/:id/poi-reviews
+app.get('/api/trips/:id/poi-reviews', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    const reviews = db.prepare(`
+      SELECT pr.*, u.name as user_name, cp.name as pin_name, cp.type as pin_type, d.name as dest_name
+      FROM poi_reviews pr
+      LEFT JOIN users u ON pr.user_id = u.id
+      LEFT JOIN custom_pins cp ON pr.custom_pin_id = cp.id
+      LEFT JOIN destinations d ON pr.destination_id = d.id
+      WHERE pr.trip_id = ?
+      ORDER BY pr.created_at DESC
+    `).all(req.params.id);
+
+    res.json({ poi_reviews: reviews });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// POI Reviews and Notes (F35) - POST /api/trips/:id/poi-reviews
+app.post('/api/trips/:id/poi-reviews', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    const { custom_pin_id, destination_id, rating, title, content, visit_date, photos } = req.body;
+
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    if (!rating || rating < 1 || rating > 5) {
+      return res.status(400).json({ error: 'Rating must be between 1 and 5' });
+    }
+
+    const reviewId = generateUUID();
+    const now = new Date().toISOString();
+
+    db.prepare(`
+      INSERT INTO poi_reviews (id, trip_id, custom_pin_id, destination_id, user_id, rating, title, content, visit_date, photos, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      reviewId,
+      req.params.id,
+      custom_pin_id,
+      destination_id,
+      user.id,
+      rating,
+      title || null,
+      content || null,
+      visit_date || null,
+      photos ? JSON.stringify(photos) : null,
+      now,
+      now
+    );
+
+    const review = db.prepare('SELECT * FROM poi_reviews WHERE id = ?').get(reviewId) as any;
+    res.status(201).json({
+      message: 'POI review created successfully',
+      poi_review: review
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// Bilingual POI Names (F38) - GET /api/trips/:id/poi-names
+app.get('/api/trips/:id/poi-names', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    const names = db.prepare(`
+      SELECT pn.*, cp.name as original_name, cp.type as pin_type, d.name as dest_name
+      FROM poi_names pn
+      LEFT JOIN custom_pins cp ON pn.custom_pin_id = cp.id
+      LEFT JOIN destinations d ON pn.destination_id = d.id
+      WHERE cp.trip_id = ? OR d.trip_id = ?
+      ORDER BY pn.language, pn.local_name
+    `).all(req.params.id, req.params.id);
+
+    res.json({ poi_names: names });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// Seasonal Alerts (F39) - GET /api/trips/:id/seasonal-alerts
+app.get('/api/trips/:id/seasonal-alerts', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    const alerts = db.prepare(`
+      SELECT sa.*, cp.name as pin_name, cp.type as pin_type, d.name as dest_name
+      FROM seasonal_alerts sa
+      LEFT JOIN custom_pins cp ON sa.custom_pin_id = cp.id
+      LEFT JOIN destinations d ON sa.destination_id = d.id
+      WHERE sa.trip_id = ? AND sa.is_active = TRUE
+      ORDER BY sa.season, sa.start_date
+    `).all(req.params.id);
+
+    res.json({ seasonal_alerts: alerts });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
 // Error handling middleware
 process.on('SIGINT', () => {
   console.log('\n🛑 Received SIGINT, shutting down gracefully...');
@@ -1918,6 +2317,241 @@ process.on('SIGTERM', () => {
   console.log('\n🛑 Received SIGTERM, shutting down gracefully...');
   // TODO: Close database connection
   process.exit(0);
+});
+
+// Module 3: Japanese Transport Ticket Calculator APIs (F23)
+
+// GET /api/trips/:id/japan-tickets - Get available Japanese transport tickets
+app.get('/api/trips/:id/japan-tickets', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+    
+    const tickets = db.prepare('SELECT * FROM japan_transport_tickets WHERE trip_id = ? AND is_active = TRUE').all(req.params.id);
+    
+    // Format response
+    const formattedTickets = tickets.map((ticket: any) => ({
+      ...ticket,
+      coverage_areas: JSON.parse(ticket.coverage_areas || '[]'),
+      conditions: JSON.parse(ticket.conditions || '{}')
+    }));
+    
+    res.json({ japan_transport_tickets: formattedTickets });
+  } catch (error: any) {
+    console.error('Get Japan tickets error:', error);
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// POST /api/trips/:id/japan-tickets/calculate - Calculate ticket cost and recommendations
+app.post('/api/trips/:id/japan-tickets/calculate', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    const { planned_trips, ticket_id } = req.body;
+    
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+    
+    // Get the ticket
+    const ticket = db.prepare('SELECT * FROM japan_transport_tickets WHERE id = ? AND trip_id = ?').get(ticket_id, req.params.id);
+    if (!ticket) {
+      return res.status(404).json({ error: 'Ticket not found' });
+    }
+    
+    // Parse ticket details
+    const ticketDetails: any = {
+      ...ticket,
+      coverage_areas: JSON.parse((ticket as any).coverage_areas || '[]'),
+      conditions: JSON.parse((ticket as any).conditions || '{}')
+    };
+    
+    // Calculate costs based on planned trips
+    const calculationResults = calculateJapanTicketCost(ticketDetails, planned_trips);
+    
+    // Save calculation record
+    const calculationId = generateUUID();
+    db.prepare(`
+      INSERT INTO japan_ticket_calculations 
+      (id, trip_id, ticket_id, planned_trips, calculated_cost_yen, alternative_ticket_suggestions, savings_yen, breakeven_analysis, recommendation)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      calculationId,
+      req.params.id,
+      ticket_id,
+      JSON.stringify(planned_trips),
+      calculationResults.calculated_cost_yen,
+      JSON.stringify(calculationResults.alternative_ticket_suggestions),
+      calculationResults.savings_yen,
+      JSON.stringify(calculationResults.breakeven_analysis),
+      calculationResults.recommendation
+    );
+    
+    res.json({
+      message: 'Ticket calculation completed successfully',
+      calculation_id: calculationId,
+      ...calculationResults
+    });
+  } catch (error: any) {
+    console.error('Japan ticket calculation error:', error);
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// Function to calculate Japan ticket cost and recommendations
+function calculateJapanTicketCost(ticket: any, planned_trips: any[]) {
+  // Mock calculation logic for Japanese transport tickets
+  const individual_trip_costs = planned_trips.map((trip: any) => {
+    // Base cost calculation (simplified)
+    let base_cost = 0;
+    
+    switch (trip.transport_mode) {
+      case 'shinkansen':
+        base_cost = 14000; // Average Shinkansen cost
+        break;
+      case 'train':
+        base_cost = 500; // Average train cost
+        break;
+      case 'subway':
+        base_cost = 200; // Average subway cost
+        break;
+      case 'bus':
+        base_cost = 300; // Average bus cost
+        break;
+      default:
+        base_cost = 400; // Default cost
+    }
+    
+    // Apply distance multiplier
+    const distance_multiplier = trip.distance_km > 0 ? Math.max(1, trip.distance_km / 10) : 1;
+    
+    return Math.round(base_cost * distance_multiplier);
+  });
+  
+  const total_individual_cost = individual_trip_costs.reduce((sum: number, cost: number) => sum + cost, 0);
+  const ticket_cost = ticket.price_yen;
+  
+  const savings_yen = Math.max(0, total_individual_cost - ticket_cost);
+  const breakeven_analysis = {
+    individual_total_cost: total_individual_cost,
+    ticket_cost,
+    savings_yen,
+    breakeven_point: total_individual_cost - ticket_cost >= 0,
+    cost_ratio: ticket_cost / total_individual_cost,
+    payback_trips: Math.ceil(ticket_cost / (total_individual_cost / planned_trips.length))
+  };
+  
+  // Generate alternative suggestions
+  const alternative_ticket_suggestions = [
+    {
+      ticket_name: 'IC Card (Suica/Pasmo)',
+      estimated_savings: Math.round(total_individual_cost * 0.1), // 10% savings
+      description: '適合短距離頻繁搭乘'
+    },
+    {
+      ticket_name: 'Regional Pass',
+      estimated_savings: Math.round(total_individual_cost * 0.15), // 15% savings
+      description: '適合特定地區長期旅行'
+    }
+  ];
+  
+  let recommendation = '';
+  if (breakeven_analysis.breakeven_point && savings_yen > 1000) {
+    recommendation = `推薦使用${ticket.ticket_name}，可節省${savings_yen}日圓`;
+  } else if (breakeven_analysis.breakeven_point) {
+    recommendation = `${ticket.ticket_name}剛好達到成本效益平衡`;
+  } else {
+    recommendation = `建議考慮其他交通方案，${ticket.ticket_name}可能不划算`;
+  }
+  
+  return {
+    calculated_cost_yen: ticket_cost,
+    total_individual_cost,
+    alternative_ticket_suggestions,
+    savings_yen,
+    breakeven_analysis,
+    recommendation
+  };
+}
+
+// POST /api/trips/:id/japan-tickets/:ticket_id/record-usage - Record ticket usage
+app.post('/api/trips/:id/japan-tickets/:ticket_id/record-usage', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    const { from_location, to_location, transport_mode, distance_km, cost_yen } = req.body;
+    
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+    
+    const ticket = db.prepare('SELECT * FROM japan_transport_tickets WHERE id = ? AND trip_id = ?').get(req.params.ticket_id, req.params.id);
+    if (!ticket) {
+      return res.status(404).json({ error: 'Ticket not found' });
+    }
+    
+    const usageId = generateUUID();
+    db.prepare(`
+      INSERT INTO japan_ticket_usage_records 
+      (id, ticket_id, trip_id, used_date, from_location, to_location, transport_mode, distance_km, cost_yen, is_valid)
+      VALUES (?, ?, ?, datetime('now'), ?, ?, ?, ?, ?, ?)
+    `).run(
+      usageId,
+      req.params.ticket_id,
+      req.params.id,
+      from_location,
+      to_location,
+      transport_mode,
+      distance_km || 0,
+      cost_yen || 0,
+      true
+    );
+    
+    res.status(201).json({
+      message: 'Ticket usage recorded successfully',
+      usage_record: { id: usageId, ...req.body }
+    });
+  } catch (error: any) {
+    console.error('Record ticket usage error:', error);
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// GET /api/trips/:id/japan-tickets/:ticket_id/usage-history - Get ticket usage history
+app.get('/api/trips/:id/japan-tickets/:ticket_id/usage-history', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+    
+    const usageRecords = db.prepare(`
+      SELECT * FROM japan_ticket_usage_records 
+      WHERE ticket_id = ? AND trip_id = ? 
+      ORDER BY used_date DESC
+    `).all(req.params.ticket_id, req.params.id);
+    
+    const formattedRecords = usageRecords.map((record: any) => ({
+      ...record,
+      used_date: new Date(record.used_date).toISOString()
+    }));
+    
+    res.json({ usage_history: formattedRecords });
+  } catch (error: any) {
+    console.error('Get ticket usage history error:', error);
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
 });
 
 // Serve Flutter Web static files only for non-API requests
