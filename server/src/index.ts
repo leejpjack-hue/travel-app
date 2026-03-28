@@ -119,11 +119,11 @@ app.post('/api/trips', (req, res) => {
     const now = new Date().toISOString();
 
     const stmt = db.prepare(`
-      INSERT INTO trips (id, user_id, name, description, destination, start_date, end_date, status, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?)
+      INSERT INTO trips (id, user_id, name, description, destination, start_date, end_date, created_by, status, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?)
     `);
 
-    stmt.run(id, user.id, name, description || null, destination || null, start_date || null, end_date || null, now, now);
+    stmt.run(id, user.id, name, description || null, destination || null, start_date || null, end_date || null, user.id, now, now);
 
     const trip: any = db.prepare('SELECT * FROM trips WHERE id = ?').get(id);
     res.status(201).json({ trip });
