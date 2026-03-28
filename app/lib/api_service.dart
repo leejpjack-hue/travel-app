@@ -4,7 +4,7 @@ import '../models/trip.dart';
 import '../models/user.dart';
 
 class ApiService {
-  static const String _baseUrl = 'http://167.179.88.55:5005';
+  static const String _baseUrl = '/api';
 
   // Get headers with authorization token
   Map<String, String> _getHeaders({bool withAuth = true}) {
@@ -233,6 +233,169 @@ class ApiService {
   Future<http.Response> addDestination(String tripId, Map<String, dynamic> destinationData) async {
     final url = Uri.parse('$_baseUrl/api/trips/$tripId/destinations');
     final body = json.encode(destinationData);
+    
+    return await http.post(
+      url,
+      headers: _getHeaders(),
+      body: body,
+    );
+  }
+
+  // Nearby Search method
+  Future<http.Response> getNearbySearch(String tripId, double lat, double lng, {int radius = 1000, String? type}) async {
+    final url = Uri.parse('$_baseUrl/api/trips/$tripId/nearby-search?lat=$lat&lng=$lng&radius=$radius${type != null ? '&type=$type' : ''}');
+    
+    return await http.get(
+      url,
+      headers: _getHeaders(),
+    );
+  }
+
+  // Crowd Prediction method
+  Future<http.Response> getCrowdPrediction(String tripId) async {
+    final url = Uri.parse('$_baseUrl/api/trips/$tripId/crowd-prediction');
+    
+    return await http.get(
+      url,
+      headers: _getHeaders(),
+    );
+  }
+
+  // Weather Alternatives method
+  Future<http.Response> getWeatherAlternatives(String tripId) async {
+    final url = Uri.parse('$_baseUrl/api/trips/$tripId/weather-alternatives');
+    
+    return await http.get(
+      url,
+      headers: _getHeaders(),
+    );
+  }
+
+  // Custom Pins methods
+  Future<http.Response> getCustomPins(String tripId) async {
+    final url = Uri.parse('$_baseUrl/api/trips/$tripId/custom-pins');
+    
+    return await http.get(
+      url,
+      headers: _getHeaders(),
+    );
+  }
+
+  Future<http.Response> addCustomPin(String tripId, Map<String, dynamic> pinData) async {
+    final url = Uri.parse('$_baseUrl/api/trips/$tripId/custom-pins');
+    final body = json.encode(pinData);
+    
+    return await http.post(
+      url,
+      headers: _getHeaders(),
+      body: body,
+    );
+  }
+
+  // GPS Tracking methods
+  Future<http.Response> getGpsTrackingStatus(String tripId) async {
+    final url = Uri.parse('$_baseUrl/api/trips/$tripId/gps-tracking/status');
+    
+    return await http.get(
+      url,
+      headers: _getHeaders(),
+    );
+  }
+
+  Future<http.Response> startGpsTracking(String tripId) async {
+    final url = Uri.parse('$_baseUrl/api/trips/$tripId/gps-tracking/start');
+    
+    return await http.post(
+      url,
+      headers: _getHeaders(),
+    );
+  }
+
+  Future<http.Response> stopGpsTracking(String tripId) async {
+    final url = Uri.parse('$_baseUrl/api/trips/$tripId/gps-tracking/stop');
+    
+    return await http.post(
+      url,
+      headers: _getHeaders(),
+    );
+  }
+
+  // Digital Tickets methods
+  Future<http.Response> getDigitalTickets(String tripId) async {
+    final url = Uri.parse('$_baseUrl/api/trips/$tripId/digital-tickets');
+    
+    return await http.get(
+      url,
+      headers: _getHeaders(),
+    );
+  }
+
+  Future<http.Response> addDigitalTicket(String tripId, Map<String, dynamic> ticketData) async {
+    final url = Uri.parse('$_baseUrl/api/trips/$tripId/digital-tickets');
+    final body = json.encode(ticketData);
+    
+    return await http.post(
+      url,
+      headers: _getHeaders(),
+      body: body,
+    );
+  }
+
+  // Alarm methods
+  Future<http.Response> getAlarms(String tripId) async {
+    final url = Uri.parse('$_baseUrl/api/trips/$tripId/alarms');
+    
+    return await http.get(
+      url,
+      headers: _getHeaders(),
+    );
+  }
+
+  Future<http.Response> addAlarm(String tripId, Map<String, dynamic> alarmData) async {
+    final url = Uri.parse('$_baseUrl/api/trips/$tripId/alarms');
+    final body = json.encode(alarmData);
+    
+    return await http.post(
+      url,
+      headers: _getHeaders(),
+      body: body,
+    );
+  }
+
+  // Emergency Info methods
+  Future<http.Response> getEmergencyInfo(String tripId) async {
+    final url = Uri.parse('$_baseUrl/api/trips/$tripId/emergency-info');
+    
+    return await http.get(
+      url,
+      headers: _getHeaders(),
+    );
+  }
+
+  Future<http.Response> updateEmergencyInfo(String tripId, Map<String, dynamic> infoData) async {
+    final url = Uri.parse('$_baseUrl/api/trips/$tripId/emergency-info');
+    final body = json.encode(infoData);
+    
+    return await http.put(
+      url,
+      headers: _getHeaders(),
+      body: body,
+    );
+  }
+
+  // Expense methods
+  Future<http.Response> getExpenses(String tripId) async {
+    final url = Uri.parse('$_baseUrl/api/trips/$tripId/expenses');
+    
+    return await http.get(
+      url,
+      headers: _getHeaders(),
+    );
+  }
+
+  Future<http.Response> addExpense(String tripId, Map<String, dynamic> expenseData) async {
+    final url = Uri.parse('$_baseUrl/api/trips/$tripId/expenses');
+    final body = json.encode(expenseData);
     
     return await http.post(
       url,

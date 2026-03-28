@@ -4096,7 +4096,7 @@ app.get('/api/trips/:id/splits', (req, res) => {
         total_amount: totalAmount,
         total_owed: totalOwed,
         total_paid: totalPaid,
-        is_settled: (totalOwed as number) === (totalPaid as number) && (totalOwed as number) > 0
+        is_settled: Math.abs((totalOwed as number) - (totalPaid as number)) < 0.01 && (totalOwed as number) > 0
       };
     });
     
@@ -4899,19 +4899,23 @@ app.post('/api/trips/:id/ai-modify', async (req, res) => {
     // Simulate AI response (in real implementation, this would call an actual AI service)
     const aiResponse = await simulateAIResponse(systemPrompt, message, tripData);
 
-    // Save conversation to database
     try {
       const conversationStmt = db.prepare(`
         INSERT INTO ai_conversations 
-        (id, trip_id, message, response, model, created_at) 
-        VALUES (?, ?, ?, ?, ?, ?)
+        (id, trip_id, message, response, context, model, created_at) 
+        VALUES (?, ?, ?, ?, ?, ?, ?)
       `);
-      conversationStmt.run(generateUUID(), tripId, message, JSON.stringify(aiResponse), 'ZenVoyage-Simulated', new Date().toISOString());
+      conversationStmt.run(
+        generateUUID(), tripId, message,
+        (aiResponse as any).response,
+        JSON.stringify({ suggestions: (aiResponse as any).suggestions, confidence: (aiResponse as any).confidence }),
+        'ZenVoyage-Simulated',
+        new Date().toISOString()
+      );
     } catch (error) {
       console.log('Failed to save AI conversation:', error);
     }
 
-    // Return AI response
     res.json({
       success: true,
       response: (aiResponse as any).response,
@@ -4950,13 +4954,21 @@ app.get('/api/trips/:id/ai-conversation', (req, res) => {
     `).all(tripId);
 
     // Format messages for frontend
-    const messages = (conversations as any[]).map(conv => ({
-      id: (conv as any).id,
-      type: 'ai',
-      content: (conv as any).response,
-      timestamp: (conv as any).created_at,
-      user_message: (conv as any).message,
-    }));
+    const messages = (conversations as any[]).map(conv => {
+      let suggestions: any[] = [];
+      try {
+        const ctx = JSON.parse((conv as any).context || '{}');
+        suggestions = ctx.suggestions || [];
+      } catch {}
+      return {
+        id: (conv as any).id,
+        type: 'ai',
+        content: (conv as any).response,
+        timestamp: (conv as any).created_at,
+        user_message: (conv as any).message,
+        suggestions,
+      };
+    });
 
     res.json({
       messages,
@@ -5075,22 +5087,20 @@ app.get('/api/trips/:id/memories', async (req, res) => {
       return res.status(404).json({ error: 'Trip not found' });
     }
 
-    // Get GPS tracking data
     const gpsData = db.prepare(`
-      SELECT gl.*, g.device_id, g.accuracy, g.timestamp as gps_timestamp
+      SELECT gl.*, g.start_time as tracking_start, g.end_time as tracking_end, g.is_active
       FROM gps_locations gl
-      JOIN gps_tracking g ON gl.tracking_session_id = g.id
+      JOIN gps_tracking g ON gl.tracking_id = g.id
       WHERE g.trip_id = ?
       ORDER BY gl.timestamp ASC
     `).all(tripId);
 
-    // Get memory photos
     const memoryPhotos = db.prepare(`
-      SELECT mp.*, p.file_path, p.description, p.taken_at
+      SELECT mp.photo_url, mp.caption, mp.taken_at
       FROM memory_photos mp
-      JOIN photos p ON mp.photo_id = p.id
-      WHERE mp.trip_id = ?
-      ORDER BY mp.created_at DESC
+      JOIN travel_memories tm ON mp.memory_id = tm.id
+      WHERE tm.trip_id = ?
+      ORDER BY mp.taken_at DESC
     `).all(tripId);
 
     // Generate memory segments based on GPS clusters
