@@ -146,6 +146,8 @@ app.get('/api/trips/:id', (req, res) => {
     
     // Get destinations for this trip
     const destinations = db.prepare('SELECT * FROM destinations WHERE trip_id = ? ORDER BY visit_date').all(trip.id);
+    
+    res.json({ trip, destinations });
   } catch (error: any) {
     res.status(401).json({ error: error.message || 'Unauthorized' });
   }
@@ -196,7 +198,7 @@ app.delete('/api/trips/:id', (req, res) => {
 
     const existing = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
     if (!existing) {
-    const existing: any = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+      return res.status(404).json({ error: 'Trip not found' });
     }
 
     db.prepare('DELETE FROM destinations WHERE trip_id = ?').run(req.params.id);
@@ -205,6 +207,289 @@ app.delete('/api/trips/:id', (req, res) => {
     res.json({ message: 'Trip deleted successfully' });
   } catch (error: any) {
     res.status(error.message?.includes('Unauthorized') ? 401 : 500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// Module 1: Pre-trip & Preferences APIs
+
+// POST /api/trips/:id/import-flight - Import flight information
+app.post('/api/trips/:id/import-flight', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    const { flight_number, departure_airport, arrival_airport, departure_time, arrival_time, airline } = req.body;
+
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    const flightId = generateUUID();
+    const now = new Date().toISOString();
+
+    db.prepare(`
+      INSERT INTO bookings (id, trip_id, type, title, booking_ref, date, start_time, end_time, location, status, created_at)
+      VALUES (?, ?, 'flight', ?, ?, ?, ?, ?, ?, 'confirmed', ?)
+    `).run(
+      flightId, 
+      trip.id, 
+      `${airline} ${flight_number}` || 'Flight',
+      flight_number || '',
+      departure_time,
+      arrival_time,
+      `${departure_airport} → ${arrival_airport}` || '',
+      'confirmed',
+      now
+    );
+
+    const flight = db.prepare('SELECT * FROM bookings WHERE id = ?').get(flightId);
+    res.status(201).json({ 
+      message: 'Flight imported successfully',
+      flight
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// GET /api/trips/:id/weather - Get weather forecast
+app.get('/api/trips/:id/weather', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    // Mock weather data (in real app, call OpenWeather API)
+    const mockWeather = {
+      destination: trip.destination,
+      forecast: [
+        {
+          date: trip.start_date,
+          condition: 'sunny',
+          temp_high: 25,
+          temp_low: 18,
+          humidity: 65,
+          precipitation: 0
+        },
+        {
+          date: trip.end_date,
+          condition: 'partly_cloudy',
+          temp_high: 23,
+          temp_low: 16,
+          humidity: 70,
+          precipitation: 10
+        }
+      ]
+    };
+
+    res.json({ weather: mockWeather });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// GET /api/trips/:id/visa-info - Get visa requirements
+app.get('/api/trips/:id/visa-info', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    // Mock visa info based on destination
+    const mockVisaInfo = {
+      destination: trip.destination,
+      visa_required: true,
+      visa_type: 'Tourist Visa',
+      processing_time: '5-10 business days',
+      documents: [
+        'Passport valid for 6 months',
+        'Visa application form',
+        'Passport photos',
+        'Flight itinerary',
+        'Hotel reservations',
+        'Proof of funds'
+      ],
+      entry_requirements: [
+        'Return ticket',
+        'Sufficient funds for stay',
+        'Yellow fever certificate (if required)'
+      ]
+    };
+
+    res.json({ visa_info: mockVisaInfo });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// POST /api/trips/:id/packing-list - Generate packing list
+app.post('/api/trips/:id/packing-list', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    const { preferences, destination, duration } = req.body;
+
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    // Generate packing list based on trip preferences
+    const packingList = {
+      essentials: [
+        'Passport/ID',
+        'Credit cards',
+        'Cash',
+        'Phone charger',
+        'Medications',
+        'Travel insurance'
+      ],
+      clothing: [
+        'Underwear (duration + 1)',
+        'Socks (duration + 1)',
+        'T-shirts (duration + 1)',
+        'Pants/trousers (3-4)',
+        'Jacket',
+        'Sleepwear',
+        'Swimwear (if applicable)'
+      ],
+      electronics: [
+        'Phone',
+        'Power bank',
+        'Camera (optional)',
+        'Headphones'
+      ],
+      documents: [
+        'Flight tickets',
+        'Hotel confirmations',
+        'Insurance details',
+        'Emergency contacts'
+      ]
+    };
+
+    const packingListId = generateUUID();
+    const now = new Date().toISOString();
+
+    // Store packing list in database
+    db.prepare(`
+      INSERT INTO destinations (id, trip_id, name, type, description, created_at, updated_at)
+      VALUES (?, ?, 'Packing List', 'packing_list', ?, ?, ?)
+    `).run(
+      packingListId,
+      trip.id,
+      JSON.stringify(packingList),
+      now,
+      now
+    );
+
+    res.status(201).json({
+      message: 'Packing list generated successfully',
+      packing_list: packingList
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// GET /api/templates - List available templates
+app.get('/api/templates', (req, res) => {
+  try {
+    const mockTemplates = [
+      {
+        id: 'tokyo-basic',
+        name: '東京基本行程',
+        description: '3天東京經典行程',
+        duration: 3,
+        destinations: ['淺草寺', '東京塔', '新宿', '渋谷'],
+        preferences: {
+          pace: 'moderate',
+          transport: 'public',
+          budget: 'medium'
+        }
+      },
+      {
+        id: 'osaka-food',
+        name: '大阪美食之旅',
+        description: '4天大阪美食探險',
+        duration: 4,
+        destinations: ['道頓堀', '大阪城', '心齋橋', '黑門市場'],
+        preferences: {
+          pace: 'relaxed',
+          transport: 'walking',
+          budget: 'low'
+        }
+      }
+    ];
+
+    res.json({ templates: mockTemplates });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// POST /api/trips/from-template/:templateId - Create trip from template
+app.post('/api/trips/from-template/:templateId', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    const { name, start_date, end_date } = req.body;
+
+    const template = {
+      id: req.params.templateId,
+      name: 'Template Name',
+      destinations: ['Destination 1', 'Destination 2'],
+      preferences: { pace: 'moderate', transport: 'public' }
+    };
+
+    if (!name || !start_date || !end_date) {
+      return res.status(400).json({ error: 'Name, start_date, and end_date are required' });
+    }
+
+    const tripId = generateUUID();
+    const now = new Date().toISOString();
+
+    // Create trip
+    const stmt = db.prepare(`
+      INSERT INTO trips (id, user_id, name, destination, start_date, end_date, preferences, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    stmt.run(
+      tripId,
+      user.id,
+      name,
+      template.destinations.join(', '),
+      start_date,
+      end_date,
+      JSON.stringify(template.preferences),
+      now,
+      now
+    );
+
+    // Add destinations from template
+    template.destinations.forEach((dest, index) => {
+      const destId = generateUUID();
+      db.prepare(`
+        INSERT INTO destinations (id, trip_id, name, type, visit_date, created_at, updated_at)
+        VALUES (?, ?, ?, 'destination', ?, ?, ?)
+      `).run(destId, tripId, dest, new Date(start_date).setDate(new Date(start_date).getDate() + index), now, now);
+    });
+
+    const trip: any = db.prepare('SELECT * FROM trips WHERE id = ?').get(tripId);
+    res.status(201).json({
+      message: 'Trip created from template successfully',
+      trip
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Internal server error' });
   }
 });
 

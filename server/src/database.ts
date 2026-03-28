@@ -63,9 +63,27 @@ function createTables() {
         destination TEXT,
         start_date DATE,
         end_date DATE,
+        timezone TEXT,
+        base_location TEXT,
+        preferences TEXT, -- JSON
+        template_id TEXT,
+        created_by TEXT NOT NULL,
         status TEXT DEFAULT 'draft',
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+      )
+    `);
+    
+    // Create collaborators table
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS collaborators (
+        id TEXT PRIMARY KEY,
+        trip_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        role TEXT NOT NULL DEFAULT 'editor',
+        invited_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (trip_id) REFERENCES trips (id) ON DELETE CASCADE,
         FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
       )
     `);
@@ -83,6 +101,29 @@ function createTables() {
         address TEXT,
         visit_date DATETIME,
         duration_hours REAL,
+        notes TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (trip_id) REFERENCES trips (id) ON DELETE CASCADE
+      )
+    `);
+    
+    // Create bookings table for flights, hotels, etc.
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS bookings (
+        id TEXT PRIMARY KEY,
+        trip_id TEXT NOT NULL,
+        type TEXT NOT NULL,
+        title TEXT NOT NULL,
+        booking_ref TEXT,
+        date DATE,
+        start_time TEXT,
+        end_time TEXT,
+        location TEXT,
+        cost INTEGER,
+        currency TEXT DEFAULT 'JPY',
+        status TEXT DEFAULT 'confirmed',
+        voucher_url TEXT,
         notes TEXT,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
