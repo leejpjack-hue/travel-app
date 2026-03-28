@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'trip_create_screen.dart';
+import 'collaborators_screen.dart';
 
 void main() {
   runApp(const MyApp());
@@ -478,6 +479,7 @@ class ProfileScreen extends StatelessWidget {
     final menuItems = [
       {'icon': Icons.history, 'title': '歷史行程', 'subtitle': '查看過往旅行記錄'},
       {'icon': Icons.favorite, 'title': '我的收藏', 'subtitle': '收藏的景點和地點'},
+      {'icon': Icons.group, 'title': '協作管理', 'subtitle': '管理行程協作者'},
       {'icon': Icons.settings, 'title': '偏好設定', 'subtitle': '交通、作息等偏好'},
       {'icon': Icons.help, 'title': '幫助中心', 'subtitle': '使用指南和常見問題'},
       {'icon': Icons.logout, 'title': '登出', 'subtitle': '退出當前帳戶'},
@@ -487,54 +489,79 @@ class ProfileScreen extends StatelessWidget {
       children: menuItems.map((item) {
         return Padding(
           padding: const EdgeInsets.only(bottom: 8),
-          child: Container(
-            padding: const EdgeInsets.all(16),
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(
-                color: Colors.grey.shade200,
+          child: GestureDetector(
+            onTap: () {
+              _handleMenuTap(item['title']);
+            },
+            child: Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(
+                  color: Colors.grey.shade200,
+                ),
               ),
-            ),
-            child: Row(
-              children: [
-                Icon(
-                  item['icon'] as IconData,
-                  size: 24,
-                  color: const Color(0xFF4ECDC4),
-                ),
-                const SizedBox(width: 16),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        item['title'] as String,
-                        style: const TextStyle(
-                          fontSize: 16,
-                          fontWeight: FontWeight.bold,
-                          color: Color(0xFF2D3436),
-                        ),
-                      ),
-                      Text(
-                        item['subtitle'] as String,
-                        style: const TextStyle(
-                          fontSize: 12,
-                          color: Colors.grey,
-                        ),
-                      ),
-                    ],
+              child: Row(
+                children: [
+                  Icon(
+                    item['icon'] as IconData,
+                    size: 24,
+                    color: const Color(0xFF4ECDC4),
                   ),
-                ),
-                const Icon(
-                  Icons.chevron_right,
-                  color: Colors.grey,
-                ),
-              ],
+                  const SizedBox(width: 16),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          item['title'] as String,
+                          style: const TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.bold,
+                            color: Color(0xFF2D3436),
+                          ),
+                        ),
+                        Text(
+                          item['subtitle'] as String,
+                          style: const TextStyle(
+                            fontSize: 12,
+                            color: Colors.grey,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const Icon(
+                    Icons.chevron_right,
+                    color: Colors.grey,
+                  ),
+                ],
+              ),
             ),
           ),
         );
       }).toList(),
     );
+  }
+
+  void _handleMenuTap(String title) {
+    switch (title) {
+      case '協作管理':
+        Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (context) => const CollaboratorsScreen(
+              tripId: 'demo-trip-id',
+              tripName: '示範行程',
+            ),
+          ),
+        );
+        break;
+      case '登出':
+        // Handle logout
+        break;
+      // Add other menu item handlers as needed
+    }
   }
 }

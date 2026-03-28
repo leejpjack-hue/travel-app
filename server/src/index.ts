@@ -232,7 +232,7 @@ app.post('/api/trips/:id/import-flight', (req, res) => {
       VALUES (?, ?, 'flight', ?, ?, ?, ?, ?, ?, 'confirmed', ?)
     `).run(
       flightId, 
-      trip.id, 
+      (trip as any).id, 
       `${airline} ${flight_number}` || 'Flight',
       flight_number || '',
       departure_time,
@@ -265,10 +265,10 @@ app.get('/api/trips/:id/weather', (req, res) => {
 
     // Mock weather data (in real app, call OpenWeather API)
     const mockWeather = {
-      destination: trip.destination,
+      destination: (trip as any).destination,
       forecast: [
         {
-          date: trip.start_date,
+          date: (trip as any).start_date,
           condition: 'sunny',
           temp_high: 25,
           temp_low: 18,
@@ -276,7 +276,7 @@ app.get('/api/trips/:id/weather', (req, res) => {
           precipitation: 0
         },
         {
-          date: trip.end_date,
+          date: (trip as any).end_date,
           condition: 'partly_cloudy',
           temp_high: 23,
           temp_low: 16,
@@ -305,7 +305,7 @@ app.get('/api/trips/:id/visa-info', (req, res) => {
 
     // Mock visa info based on destination
     const mockVisaInfo = {
-      destination: trip.destination,
+      destination: (trip as any).destination,
       visa_required: true,
       visa_type: 'Tourist Visa',
       processing_time: '5-10 business days',
@@ -384,7 +384,7 @@ app.post('/api/trips/:id/packing-list', (req, res) => {
       VALUES (?, ?, 'Packing List', 'packing_list', ?, ?, ?)
     `).run(
       packingListId,
-      trip.id,
+      (trip as any).id,
       JSON.stringify(packingList),
       now,
       now
@@ -487,6 +487,345 @@ app.post('/api/trips/from-template/:templateId', (req, res) => {
     res.status(201).json({
       message: 'Trip created from template successfully',
       trip
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// Collaborators APIs
+// POST /api/trips/:id/collaborators - Add collaborator to trip
+app.post('/api/trips/:id/collaborators', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    const { collaborator_email, role = 'editor' } = req.body;
+
+    if (!collaborator_email) {
+      return res.status(400).json({ error: 'Collaborator email is required' });
+    }
+
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    // Check if collaborator exists as a user
+    const collaboratorUser = findUserByEmail(collaborator_email) as any;
+    if (!collaboratorUser) {
+      return res.status(404).json({ error: 'Collaborator user not found' });
+    }
+
+    // Check if collaborator is already added
+    const existing = db.prepare('SELECT * FROM collaborators WHERE trip_id = ? AND user_id = ?').get(req.params.id, collaboratorUser.id);
+    if (existing) {
+      return res.status(409).json({ error: 'Collaborator already added' });
+    }
+
+    const collaboratorId = generateUUID();
+    const now = new Date().toISOString();
+
+    db.prepare(`
+      INSERT INTO collaborators (id, trip_id, user_id, role, invited_at)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(collaboratorId, req.params.id, collaboratorUser.id, role, now);
+
+    const collaborator = db.prepare('SELECT * FROM collaborators WHERE id = ?').get(collaboratorId) as any;
+    res.status(201).json({
+      message: 'Collaborator added successfully',
+      collaborator: {
+        id: collaborator.id,
+        user_id: collaborator.user_id,
+        email: collaboratorUser.email,
+        name: collaboratorUser.name,
+        role: collaborator.role,
+        invited_at: collaborator.invited_at
+      }
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// GET /api/trips/:id/collaborators - Get all collaborators for a trip
+app.get('/api/trips/:id/collaborators', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    const collaborators = db.prepare(`
+      SELECT c.*, u.email, u.name
+      FROM collaborators c
+      JOIN users u ON c.user_id = u.id
+      WHERE c.trip_id = ?
+      ORDER BY c.invited_at DESC
+    `).all(req.params.id);
+
+    res.json({ collaborators });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// DELETE /api/trips/:id/collaborators/:collaboratorId - Remove collaborator
+app.delete('/api/trips/:id/collaborators/:collaboratorId', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    const collaborator = db.prepare('SELECT * FROM collaborators WHERE id = ? AND trip_id = ?').get(req.params.collaboratorId, req.params.id);
+    if (!collaborator) {
+      return res.status(404).json({ error: 'Collaborator not found' });
+    }
+
+    db.prepare('DELETE FROM collaborators WHERE id = ?').run(req.params.collaboratorId);
+
+    res.json({ message: 'Collaborator removed successfully' });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// PUT /api/trips/:id/collaborators/:collaboratorId - Update collaborator role
+app.put('/api/trips/:id/collaborators/:collaboratorId', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    const { role } = req.body;
+
+    if (!role || !['viewer', 'editor', 'admin'].includes(role)) {
+      return res.status(400).json({ error: 'Invalid role' });
+    }
+
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    const collaborator = db.prepare('SELECT * FROM collaborators WHERE id = ? AND trip_id = ?').get(req.params.collaboratorId, req.params.id);
+    if (!collaborator) {
+      return res.status(404).json({ error: 'Collaborator not found' });
+    }
+
+    const now = new Date().toISOString();
+    db.prepare(`
+      UPDATE collaborators SET role = ?, updated_at = ?
+      WHERE id = ? AND trip_id = ?
+    `).run(role, now, req.params.collaboratorId, req.params.id);
+
+    const updatedCollaborator = db.prepare('SELECT * FROM collaborators WHERE id = ?').get(req.params.collaboratorId) as any;
+    res.json({
+      message: 'Collaborator role updated successfully',
+      collaborator: {
+        id: updatedCollaborator.id,
+        user_id: updatedCollaborator.user_id,
+        role: updatedCollaborator.role,
+        invited_at: updatedCollaborator.invited_at
+      }
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// Transportation Preferences APIs
+// GET /api/users/me/preferences/transportation - Get user transportation preferences
+app.get('/api/users/me/preferences/transportation', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    
+    const preferences = db.prepare('SELECT transport_preferences FROM users WHERE id = ?').get(user.id) as any;
+    
+    const transportPrefs = preferences?.transport_preferences ? JSON.parse(preferences.transport_preferences) : {
+      preferred_modes: ['public', 'walking'],
+      avoid_tolls: false,
+      max_walking_distance: 2000,
+      wheelchair_accessible: false,
+      pet_friendly: false,
+      budget_level: 'medium'
+    };
+
+    res.json({ transportation_preferences: transportPrefs });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// PUT /api/users/me/preferences/transportation - Update transportation preferences
+app.put('/api/users/me/preferences/transportation', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    const { preferred_modes = [], avoid_tolls = false, max_walking_distance = 2000, wheelchair_accessible = false, pet_friendly = false, budget_level = 'medium' } = req.body;
+
+    const preferences = {
+      preferred_modes,
+      avoid_tolls,
+      max_walking_distance,
+      wheelchair_accessible,
+      pet_friendly,
+      budget_level,
+      updated_at: new Date().toISOString()
+    };
+
+    db.prepare(`
+      UPDATE users SET transport_preferences = ?, updated_at = ?
+      WHERE id = ?
+    `).run(JSON.stringify(preferences), new Date().toISOString(), user.id);
+
+    res.json({
+      message: 'Transportation preferences updated successfully',
+      transportation_preferences: preferences
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// Schedule Preferences APIs
+// GET /api/users/me/preferences/schedule - Get user schedule preferences
+app.get('/api/users/me/preferences/schedule', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    
+    const preferences = db.prepare('SELECT schedule_preferences FROM users WHERE id = ?').get(user.id) as any;
+    
+    const schedulePrefs = preferences?.schedule_preferences ? JSON.parse(preferences.schedule_preferences) : {
+      preferred_start_time: '09:00',
+      preferred_end_time: '18:00',
+      meal_break_duration: 60,
+      rest_break_duration: 30,
+      max_daily_hours: 10,
+      early_bird: false,
+      night_owl: false,
+      pace: 'moderate'
+    };
+
+    res.json({ schedule_preferences: schedulePrefs });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// PUT /api/users/me/preferences/schedule - Update schedule preferences
+app.put('/api/users/me/preferences/schedule', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    const { preferred_start_time = '09:00', preferred_end_time = '18:00', meal_break_duration = 60, rest_break_duration = 30, max_daily_hours = 10, early_bird = false, night_owl = false, pace = 'moderate' } = req.body;
+
+    const preferences = {
+      preferred_start_time,
+      preferred_end_time,
+      meal_break_duration,
+      rest_break_duration,
+      max_daily_hours,
+      early_bird,
+      night_owl,
+      pace,
+      updated_at: new Date().toISOString()
+    };
+
+    db.prepare(`
+      UPDATE users SET schedule_preferences = ?, updated_at = ?
+      WHERE id = ?
+    `).run(JSON.stringify(preferences), new Date().toISOString(), user.id);
+
+    res.json({
+      message: 'Schedule preferences updated successfully',
+      schedule_preferences: preferences
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// Base Day Tour Mode APIs
+// POST /api/trips/:id/base-tour-mode - Enable base day tour mode
+app.post('/api/trips/:id/base-tour-mode', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    const { base_location, tour_radius = 5000, max_destinations = 5 } = req.body;
+
+    if (!base_location) {
+      return res.status(400).json({ error: 'Base location is required' });
+    }
+
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    const now = new Date().toISOString();
+    db.prepare(`
+      UPDATE trips SET base_location = ?, tour_radius = ?, max_destinations = ?, preferences = json_set(COALESCE(preferences, '{}'), '$.base_tour_mode', true), updated_at = ?
+      WHERE id = ? AND user_id = ?
+    `).run(base_location, tour_radius, max_destinations, now, req.params.id, user.id);
+
+    // Generate sample nearby destinations
+    const sampleDestinations = [
+      { name: '咖啡店', type: 'cafe', distance: 200, duration: 30 },
+      { name: '觀景台', type: 'viewpoint', distance: 800, duration: 45 },
+      { name: '紀念品店', type: 'shopping', distance: 350, duration: 20 },
+      { name: '午餐地點', type: 'restaurant', distance: 500, duration: 60 },
+      { name: '公園', type: 'park', distance: 1200, duration: 90 }
+    ];
+
+    // Clear existing destinations and add new ones
+    db.prepare('DELETE FROM destinations WHERE trip_id = ?').run(req.params.id);
+    
+    sampleDestinations.slice(0, max_destinations).forEach((dest, index) => {
+      const destId = generateUUID();
+      db.prepare(`
+        INSERT INTO destinations (id, trip_id, name, type, description, visit_date, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(destId, req.params.id, dest.name, dest.type, `距離基地 ${dest.distance}m`, 
+        new Date((trip as any).start_date).setDate(new Date((trip as any).start_date).getDate() + index), now, now);
+    });
+
+    const updatedTrip = db.prepare('SELECT * FROM trips WHERE id = ?').get(req.params.id);
+    res.status(201).json({
+      message: 'Base tour mode enabled successfully',
+      trip: updatedTrip,
+      suggested_destinations: sampleDestinations.slice(0, max_destinations)
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// GET /api/trips/:id/base-tour-mode - Check if base tour mode is enabled
+app.get('/api/trips/:id/base-tour-mode', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    const baseTourMode = trip && (trip as any).preferences ? JSON.parse((trip as any).preferences)?.base_tour_mode || false : false;
+    const baseLocation = (trip as any).base_location;
+
+    res.json({
+      base_tour_mode: baseTourMode,
+      base_location: baseLocation,
+      tour_radius: (trip as any).tour_radius || 5000,
+      max_destinations: (trip as any).max_destinations || 5
     });
   } catch (error: any) {
     res.status(500).json({ error: error.message || 'Internal server error' });
