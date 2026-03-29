@@ -3335,6 +3335,20 @@ app.get('/api/trips/:id/offline-status', (req, res) => {
 });
 
 // F42: 實時 GPS 行程追蹤 - Start/stop GPS tracking
+// GET /api/trips/:id/gps-tracking/status - Get GPS tracking status
+app.get('/api/trips/:id/gps-tracking/status', (req, res) => {
+  try {
+    const user = getCurrentUser(req) as any;
+    const db = getDatabase();
+    const trip = db.prepare('SELECT * FROM trips WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+    if (!trip) return res.status(404).json({ error: 'Trip not found' });
+    const tracking = db.prepare('SELECT * FROM gps_tracking WHERE trip_id = ? ORDER BY created_at DESC LIMIT 1').get(req.params.id);
+    res.json({ success: true, data: tracking || { status: 'not_started' } });
+  } catch (error: any) {
+    res.status(401).json({ error: error.message });
+  }
+});
+
 app.post('/api/trips/:id/gps-tracking/start', (req, res) => {
   try {
     const user = getCurrentUser(req) as any;
