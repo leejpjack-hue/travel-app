@@ -95,27 +95,64 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   int _currentIndex = 0;
+  String? _selectedTripId;
+  Trip? _selectedTrip;
 
-  final List<Widget> _screens = [
-    const HomeContent(),
-    const TripCreateScreen(),
-    const TransportationPlanningScreen(tripId: 'demo-trip-id'),
-    const POIScreen(tripId: 'demo-trip-id'),
-    const InTripScreen(tripId: 'demo-trip-id'),
-    const SharedFundScreen(tripId: 'demo-trip-id'),
-    PdfExportScreen(trip: Trip(id: 'demo-trip-id', name: '示範行程', destination: '示範目的地', startDate: DateTime.now(), endDate: DateTime.now().add(const Duration(days: 7)), status: 'draft', createdAt: DateTime.now(), updatedAt: DateTime.now())),
-  ];
-
-  @override
-  void initState() {
-    super.initState();
-    _currentIndex = 0; // Start with home screen
+  void _selectTrip(Trip trip) {
+    setState(() {
+      _selectedTripId = trip.id;
+      _selectedTrip = trip;
+    });
   }
 
   @override
   Widget build(BuildContext context) {
+    final tripId = _selectedTripId ?? '';
+    final Widget body;
+    switch (_currentIndex) {
+      case 0:
+        body = HomeContent(
+          onTripSelected: _selectTrip,
+          selectedTripId: _selectedTripId,
+        );
+        break;
+      case 1:
+        body = TripCreateScreen(
+          onTripCreated: (Trip trip) {
+            _selectTrip(trip);
+            setState(() => _currentIndex = 0);
+          },
+        );
+        break;
+      case 2:
+        body = tripId.isNotEmpty
+            ? TransportationPlanningScreen(tripId: tripId)
+            : _buildNoTripPlaceholder();
+        break;
+      case 3:
+        body = tripId.isNotEmpty
+            ? POIScreen(tripId: tripId)
+            : _buildNoTripPlaceholder();
+        break;
+      case 4:
+        body = tripId.isNotEmpty
+            ? InTripScreen(tripId: tripId)
+            : _buildNoTripPlaceholder();
+        break;
+      case 5:
+        body = tripId.isNotEmpty
+            ? SharedFundScreen(tripId: tripId)
+            : _buildNoTripPlaceholder();
+        break;
+      default:
+        body = HomeContent(
+          onTripSelected: _selectTrip,
+          selectedTripId: _selectedTripId,
+        );
+    }
+
     return Scaffold(
-      body: _screens[_currentIndex],
+      body: body,
       bottomNavigationBar: BottomNavigationBar(
         currentIndex: _currentIndex,
         type: BottomNavigationBarType.fixed,
@@ -157,10 +194,83 @@ class _HomeScreenState extends State<HomeScreen> {
       ),
     );
   }
+
+  Widget _buildNoTripPlaceholder() {
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          const Icon(Icons.trip_origin, size: 64, color: Colors.grey),
+          const SizedBox(height: 16),
+          const Text('請先從首頁選擇一個行程', style: TextStyle(fontSize: 16, color: Colors.grey)),
+          const SizedBox(height: 16),
+          ElevatedButton(
+            onPressed: () => setState(() => _currentIndex = 0),
+            child: const Text('返回首頁'),
+          ),
+        ],
+      ),
+    );
+  }
 }
 
-class HomeContent extends StatelessWidget {
-  const HomeContent({super.key});
+class HomeContent extends StatefulWidget {
+  final void Function(Trip trip)? onTripSelected;
+  final String? selectedTripId;
+
+  const HomeContent({super.key, this.onTripSelected, this.selectedTripId});
+
+  @override
+  State<HomeContent> createState() => _HomeContentState();
+}
+
+class _HomeContentState extends State<HomeContent> {
+  List<Trip> _trips = [];
+  bool _isLoading = true;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _fetchTrips();
+  }
+
+  Future<void> _fetchTrips() async {
+    setState(() {
+      _isLoading = true;
+      _error = null;
+    });
+
+    try {
+      final token = await TokenStorage.getToken();
+      final response = await http.get(
+        Uri.parse('/api/trips'),
+        headers: {
+          'Content-Type': 'application/json',
+          if (token != null) 'Authorization': 'Bearer $token',
+        },
+      );
+
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body);
+        final List<dynamic> tripList = data['trips'] ?? data;
+        setState(() {
+          _trips = tripList.map((t) => Trip.fromJson(t)).toList();
+          _isLoading = false;
+        });
+      } else {
+        setState(() {
+          _error = '載入行程失敗 (${response.statusCode})';
+          _isLoading = false;
+        });
+      }
+    } catch (e) {
+      setState(() {
+        _error = '網路錯誤: ${e.toString()}';
+        _isLoading = false;
+      });
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -176,151 +286,209 @@ class HomeContent extends StatelessWidget {
         backgroundColor: const Color(0xFF4ECDC4),
         foregroundColor: Colors.white,
         elevation: 0,
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.refresh),
+            onPressed: _fetchTrips,
+          ),
+          IconButton(
+            icon: const Icon(Icons.logout),
+            onPressed: () async {
+              await TokenStorage.clearToken();
+              // Restart app to show login
+              Navigator.pushAndRemoveUntil(
+                context,
+                MaterialPageRoute(builder: (_) => const MyApp()),
+                (route) => false,
+              );
+            },
+          ),
+        ],
       ),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // Welcome section
-            Container(
-              padding: const EdgeInsets.all(20),
-              decoration: BoxDecoration(
-                gradient: LinearGradient(
-                  colors: [
-                    const Color(0xFF4ECDC4).withOpacity(0.1),
-                    Colors.white,
-                  ],
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                ),
-                borderRadius: BorderRadius.circular(20),
-                border: Border.all(
-                  color: const Color(0xFF4ECDC4).withOpacity(0.3),
-                ),
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text(
-                    '歡迎回來，旅行者！',
-                    style: TextStyle(
-                      fontSize: 20,
-                      fontWeight: FontWeight.bold,
-                      color: Color(0xFF2D3436),
+      body: _isLoading
+          ? const Center(child: CircularProgressIndicator())
+          : _error != null
+              ? Center(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Text(_error!, style: const TextStyle(color: Colors.red)),
+                      const SizedBox(height: 16),
+                      ElevatedButton(onPressed: _fetchTrips, child: const Text('重試')),
+                    ],
+                  ),
+                )
+              : RefreshIndicator(
+                  onRefresh: _fetchTrips,
+                  child: SingleChildScrollView(
+                    physics: const AlwaysScrollableScrollPhysics(),
+                    padding: const EdgeInsets.all(16),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        // Welcome section
+                        Container(
+                          padding: const EdgeInsets.all(20),
+                          decoration: BoxDecoration(
+                            gradient: LinearGradient(
+                              colors: [
+                                const Color(0xFF4ECDC4).withOpacity(0.1),
+                                Colors.white,
+                              ],
+                              begin: Alignment.topLeft,
+                              end: Alignment.bottomRight,
+                            ),
+                            borderRadius: BorderRadius.circular(20),
+                            border: Border.all(
+                              color: const Color(0xFF4ECDC4).withOpacity(0.3),
+                            ),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const Text(
+                                '歡迎回來，旅行者！',
+                                style: TextStyle(
+                                  fontSize: 20,
+                                  fontWeight: FontWeight.bold,
+                                  color: Color(0xFF2D3436),
+                                ),
+                              ),
+                              const SizedBox(height: 8),
+                              Text(
+                                _trips.isEmpty ? '開始規劃您的第一次冒險' : '您有 ${_trips.length} 個行程',
+                                style: const TextStyle(
+                                  fontSize: 16,
+                                  color: Colors.grey,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+
+                        const SizedBox(height: 30),
+
+                        // Quick actions
+                        const Text(
+                          '快速操作',
+                          style: TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.bold,
+                            color: Color(0xFF2D3436),
+                          ),
+                        ),
+
+                        const SizedBox(height: 16),
+
+                        GridView.count(
+                          shrinkWrap: true,
+                          physics: const NeverScrollableScrollPhysics(),
+                          crossAxisCount: 2,
+                          crossAxisSpacing: 16,
+                          mainAxisSpacing: 16,
+                          children: [
+                            _buildActionCard(
+                              context,
+                              icon: Icons.flight_takeoff,
+                              title: '創建行程',
+                              subtitle: '開始新的旅行',
+                              color: const Color(0xFF4ECDC4),
+                              onTap: () => Navigator.push(
+                                context,
+                                MaterialPageRoute(builder: (context) => const TripCreateScreen()),
+                              ),
+                            ),
+                            _buildActionCard(
+                              context,
+                              icon: Icons.cloud,
+                              title: '天氣預報',
+                              subtitle: '查看行程天氣',
+                              color: const Color(0xFFA8E6CF),
+                            ),
+                            _buildActionCard(
+                              context,
+                              icon: Icons.luggage,
+                              title: '打包清單',
+                              subtitle: '智能推薦',
+                              color: const Color(0xFFFFD93D),
+                            ),
+                            _buildActionCard(
+                              context,
+                              icon: Icons.flight_land,
+                              title: '航班資訊',
+                              subtitle: '自動匯入',
+                              color: const Color(0xFFFF6B6B),
+                            ),
+                          ],
+                        ),
+
+                        const SizedBox(height: 30),
+
+                        // My trips
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            const Text(
+                              '我的行程',
+                              style: TextStyle(
+                                fontSize: 18,
+                                fontWeight: FontWeight.bold,
+                                color: Color(0xFF2D3436),
+                              ),
+                            ),
+                            if (_trips.isNotEmpty)
+                              TextButton(
+                                onPressed: () => Navigator.push(
+                                  context,
+                                  MaterialPageRoute(builder: (context) => const TripCreateScreen()),
+                                ),
+                                child: const Text('+ 新增'),
+                              ),
+                          ],
+                        ),
+
+                        const SizedBox(height: 16),
+
+                        if (_trips.isEmpty)
+                          Container(
+                            padding: const EdgeInsets.all(40),
+                            decoration: BoxDecoration(
+                              color: Colors.grey.shade50,
+                              borderRadius: BorderRadius.circular(16),
+                              border: Border.all(color: Colors.grey.shade200),
+                            ),
+                            child: Column(
+                              children: [
+                                const Icon(Icons.flight_takeoff, size: 48, color: Colors.grey),
+                                const SizedBox(height: 16),
+                                const Text(
+                                  '還沒有行程',
+                                  style: TextStyle(fontSize: 16, color: Colors.grey),
+                                ),
+                                const SizedBox(height: 8),
+                                ElevatedButton(
+                                  onPressed: () => Navigator.push(
+                                    context,
+                                    MaterialPageRoute(builder: (context) => const TripCreateScreen()),
+                                  ),
+                                  style: ElevatedButton.styleFrom(
+                                    backgroundColor: const Color(0xFF4ECDC4),
+                                    foregroundColor: Colors.white,
+                                  ),
+                                  child: const Text('創建第一個行程'),
+                                ),
+                              ],
+                            ),
+                          )
+                        else
+                          ..._trips.map((trip) => Padding(
+                            padding: const EdgeInsets.only(bottom: 16),
+                            child: _buildTripCardFromModel(trip),
+                          )),
+                      ],
                     ),
                   ),
-                  const SizedBox(height: 8),
-                  const Text(
-                    '開始規劃您的下一次冒險',
-                    style: TextStyle(
-                      fontSize: 16,
-                      color: Colors.grey,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-
-            const SizedBox(height: 30),
-
-            // Quick actions
-            const Text(
-              '快速操作',
-              style: TextStyle(
-                fontSize: 18,
-                fontWeight: FontWeight.bold,
-                color: Color(0xFF2D3436),
-              ),
-            ),
-
-            const SizedBox(height: 16),
-
-            GridView.count(
-              shrinkWrap: true,
-              physics: const NeverScrollableScrollPhysics(),
-              crossAxisCount: 2,
-              crossAxisSpacing: 16,
-              mainAxisSpacing: 16,
-              children: [
-                _buildActionCard(
-                  context,
-                  icon: Icons.flight_takeoff,
-                  title: '創建行程',
-                  subtitle: '開始新的旅行',
-                  color: const Color(0xFF4ECDC4),
-                  onTap: () => Navigator.push(
-                    context,
-                    MaterialPageRoute(builder: (context) => const TripCreateScreen()),
-                  ),
                 ),
-                _buildActionCard(
-                  context,
-                  icon: Icons.cloud,
-                  title: '天氣預報',
-                  subtitle: '查看行程天氣',
-                  color: const Color(0xFFA8E6CF),
-                ),
-                _buildActionCard(
-                  context,
-                  icon: Icons.luggage,
-                  title: '打包清單',
-                  subtitle: '智能推薦',
-                  color: const Color(0xFFFFD93D),
-                ),
-                _buildActionCard(
-                  context,
-                  icon: Icons.flight_land,
-                  title: '航班資訊',
-                  subtitle: '自動匯入',
-                  color: const Color(0xFFFF6B6B),
-                ),
-                _buildActionCard(
-                  context,
-                  icon: Icons.place,
-                  title: '景點管理',
-                  subtitle: '自訂地標',
-                  color: const Color(0xFF96CEB4),
-                  onTap: () => Navigator.push(
-                    context,
-                    MaterialPageRoute(builder: (context) => const POIScreen(tripId: 'demo-trip-id')),
-                  ),
-                ),
-              ],
-            ),
-
-            const SizedBox(height: 30),
-
-            // Recent trips
-            const Text(
-              '最近行程',
-              style: TextStyle(
-                fontSize: 18,
-                fontWeight: FontWeight.bold,
-                color: Color(0xFF2D3436),
-              ),
-            ),
-
-            const SizedBox(height: 16),
-
-            _buildTripCard(
-              title: '東京春節之旅',
-              destination: '日本東京',
-              date: '2024-02-10 - 2024-02-15',
-              status: '規劃中',
-            ),
-
-            const SizedBox(height: 16),
-
-            _buildTripCard(
-              title: '大阪美食探險',
-              destination: '日本大阪',
-              date: '2024-03-01 - 2024-03-05',
-              status: '已規劃',
-            ),
-          ],
-        ),
-      ),
     );
   }
 
@@ -404,18 +572,20 @@ class HomeContent extends StatelessWidget {
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Text(
-                title,
-                style: const TextStyle(
-                  fontSize: 18,
-                  fontWeight: FontWeight.bold,
-                  color: Color(0xFF2D3436),
+              Expanded(
+                child: Text(
+                  title,
+                  style: const TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold,
+                    color: Color(0xFF2D3436),
+                  ),
                 ),
               ),
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                 decoration: BoxDecoration(
-                  color: status == '規劃中'
+                  color: status == 'planning'
                       ? const Color(0xFF4ECDC4).withOpacity(0.2)
                       : const Color(0xFFA8E6CF).withOpacity(0.2),
                   borderRadius: BorderRadius.circular(12),
@@ -425,7 +595,7 @@ class HomeContent extends StatelessWidget {
                   style: TextStyle(
                     fontSize: 12,
                     fontWeight: FontWeight.bold,
-                    color: status == '規劃中'
+                    color: status == 'planning'
                         ? const Color(0xFF4ECDC4)
                         : const Color(0xFF27AE60),
                   ),
@@ -450,6 +620,91 @@ class HomeContent extends StatelessWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildTripCardFromModel(Trip trip) {
+    final isSelected = widget.selectedTripId == trip.id;
+    final dateStr = trip.startDate != null && trip.endDate != null
+        ? '${trip.startDate!.toString().substring(0, 10)} - ${trip.endDate!.toString().substring(0, 10)}'
+        : '尚未設定日期';
+
+    return GestureDetector(
+      onTap: () {
+        if (widget.onTripSelected != null) {
+          widget.onTripSelected!(trip);
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('已選擇: ${trip.name}'), duration: const Duration(seconds: 1)),
+          );
+        }
+      },
+      child: Container(
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: isSelected ? const Color(0xFF4ECDC4).withOpacity(0.05) : Colors.white,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(
+            color: isSelected ? const Color(0xFF4ECDC4) : Colors.grey.shade200,
+            width: isSelected ? 2 : 1,
+          ),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.grey.withOpacity(0.1),
+              blurRadius: 10,
+              offset: const Offset(0, 2),
+            ),
+          ],
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Expanded(
+                  child: Text(
+                    trip.name,
+                    style: TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                      color: isSelected ? const Color(0xFF4ECDC4) : const Color(0xFF2D3436),
+                    ),
+                  ),
+                ),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: trip.status == 'planning'
+                        ? const Color(0xFF4ECDC4).withOpacity(0.2)
+                        : const Color(0xFFA8E6CF).withOpacity(0.2),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Text(
+                    trip.status,
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.bold,
+                      color: trip.status == 'planning'
+                          ? const Color(0xFF4ECDC4)
+                          : const Color(0xFF27AE60),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Text(
+              trip.destination,
+              style: const TextStyle(fontSize: 14, color: Colors.grey),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              dateStr,
+              style: const TextStyle(fontSize: 12, color: Colors.grey),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -634,11 +889,14 @@ class _InTripScreenState extends State<InTripScreen> {
     final client = http.Client();
     final request = http.Request(method, Uri.parse('$_serverBase$url'));
     
+    final token = await TokenStorage.getToken();
+    request.headers.addAll({
+      'Content-Type': 'application/json',
+      if (token != null) 'Authorization': 'Bearer $token',
+    });
+    
     if (body != null) {
       request.body = jsonEncode(body);
-      request.headers.addAll({
-        'Content-Type': 'application/json',
-      });
     }
     
     try {

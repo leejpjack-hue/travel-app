@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'token_storage.dart';
+import 'token_storage.dart';
 
 class CollaboratorsScreen extends StatefulWidget {
   final String tripId;
@@ -28,20 +29,16 @@ class _CollaboratorsScreenState extends State<CollaboratorsScreen> {
   @override
   void initState() {
     super.initState();
-    _loadAuthToken();
-    _loadCollaborators();
+    _initData();
   }
 
-  Future<void> _loadAuthToken() async {
-    final token = await _getStoredToken();
-    setState(() {
-      _authToken = token;
-    });
+  Future<void> _initData() async {
+    _authToken = await TokenStorage.getToken();
+    if (mounted) setState(() {});
+    await _loadCollaborators();
   }
 
-  Future<String?> _getStoredToken() async {
-    return await TokenStorage.getToken();
-  }
+
 
   Future<void> _loadCollaborators() async {
     if (_authToken == null) return;

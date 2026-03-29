@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'dart:convert';
 import 'package:http/http.dart' as http;
+import 'token_storage.dart';
 
 class POIScreen extends StatefulWidget {
   final String tripId;
@@ -140,9 +141,10 @@ class _POIScreenState extends State<POIScreen> {
       final request = http.Request(method, uri);
       
       // Add headers
+      final token = await TokenStorage.getToken();
       request.headers.addAll({
         'Content-Type': 'application/json',
-        'Authorization': 'Bearer demo-token', // In real app, use actual token
+        if (token != null) 'Authorization': 'Bearer $token',
       });
       
       // Add body for POST/PUT requests

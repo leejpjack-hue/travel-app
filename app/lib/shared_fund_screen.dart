@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'dart:convert';
 import 'package:http/http.dart' as http;
+import 'token_storage.dart';
 
 class SharedFundScreen extends StatefulWidget {
   final String tripId;
@@ -32,10 +33,7 @@ class _SharedFundScreenState extends State<SharedFundScreen> {
     try {
       final response = await http.get(
         Uri.parse('/api/trips/${widget.tripId}/splits'),
-        headers: {
-          'Content-Type': 'application/json',
-          // Add authentication header if needed
-        },
+        headers: await _authHeaders(),
       );
 
       if (response.statusCode == 200) {
@@ -342,6 +340,15 @@ class _SharedFundScreenState extends State<SharedFundScreen> {
         ],
       ),
     );
+  }
+
+
+  Future<Map<String, String>> _authHeaders() async {
+    final token = await TokenStorage.getToken();
+    return {
+      'Content-Type': 'application/json',
+      if (token != null) 'Authorization': 'Bearer \$token',
+    };
   }
 
   @override

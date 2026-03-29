@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'dart:convert';
 import 'package:http/http.dart' as http;
+import 'token_storage.dart';
 
 class InTripScreen extends StatefulWidget {
   final String tripId;
@@ -181,11 +182,14 @@ class _InTripScreenState extends State<InTripScreen> {
     final client = http.Client();
     final request = http.Request(method, Uri.parse('$_serverBase$url'));
     
+    final token = await TokenStorage.getToken();
+    request.headers.addAll({
+      'Content-Type': 'application/json',
+      if (token != null) 'Authorization': 'Bearer $token',
+    });
+    
     if (body != null) {
       request.body = jsonEncode(body);
-      request.headers.addAll({
-        'Content-Type': 'application/json',
-      });
     }
     
     try {

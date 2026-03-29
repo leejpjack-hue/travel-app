@@ -2,9 +2,12 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'token_storage.dart';
+import 'models/trip.dart';
 
 class TripCreateScreen extends StatefulWidget {
-  const TripCreateScreen({super.key});
+  final void Function(Trip trip)? onTripCreated;
+
+  const TripCreateScreen({super.key, this.onTripCreated});
 
   @override
   State<TripCreateScreen> createState() => _TripCreateScreenState();
@@ -64,7 +67,10 @@ class _TripCreateScreenState extends State<TripCreateScreen> {
       );
 
       if (response.statusCode == 201) {
-        final trip = json.decode(response.body)['trip'];
+        final tripData = json.decode(response.body)['trip'];
+        if (tripData != null && widget.onTripCreated != null) {
+          widget.onTripCreated!(Trip.fromJson(tripData));
+        }
         _showSuccessDialog('行程已成功創建！');
         _formKey.currentState?.reset();
       } else {

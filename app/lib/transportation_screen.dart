@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'dart:convert';
 import 'package:http/http.dart' as http;
+import 'token_storage.dart';
 
 class TransportationPlanningScreen extends StatefulWidget {
   final String tripId;
@@ -32,7 +33,7 @@ class _TransportationPlanningScreenState extends State<TransportationPlanningScr
     try {
       final response = await http.get(
         Uri.parse('/api/trips/${widget.tripId}/transportation-modes'),
-        headers: {'Content-Type': 'application/json'},
+        headers: await _authHeaders(),
       );
 
       if (response.statusCode == 200) {
@@ -53,7 +54,7 @@ class _TransportationPlanningScreenState extends State<TransportationPlanningScr
     try {
       final response = await http.get(
         Uri.parse('/api/trips/${widget.tripId}/route-optimizations'),
-        headers: {'Content-Type': 'application/json'},
+        headers: await _authHeaders(),
       );
 
       if (response.statusCode == 200) {
@@ -76,7 +77,7 @@ class _TransportationPlanningScreenState extends State<TransportationPlanningScr
     try {
       final response = await http.post(
         Uri.parse('/api/trips/${widget.tripId}/transportation-modes'),
-        headers: {'Content-Type': 'application/json'},
+        headers: await _authHeaders(),
         body: json.encode({
           'name': modeNameController.text,
           'type': modeTypeController.text,
@@ -109,7 +110,7 @@ class _TransportationPlanningScreenState extends State<TransportationPlanningScr
 
       final response = await http.post(
         Uri.parse('/api/trips/${widget.tripId}/route-optimization'),
-        headers: {'Content-Type': 'application/json'},
+        headers: await _authHeaders(),
         body: json.encode({
           'algorithm': 'nearest_neighbor',
           'optimize_for': 'time',
@@ -166,6 +167,15 @@ class _TransportationPlanningScreenState extends State<TransportationPlanningScr
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text(message), backgroundColor: Colors.green),
     );
+  }
+
+
+  Future<Map<String, String>> _authHeaders() async {
+    final token = await TokenStorage.getToken();
+    return {
+      'Content-Type': 'application/json',
+      if (token != null) 'Authorization': 'Bearer \$token',
+    };
   }
 
   @override

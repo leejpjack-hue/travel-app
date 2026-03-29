@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'dart:convert';
 import 'package:http/http.dart' as http;
+import 'token_storage.dart';
 import 'package:flutter/foundation.dart';
 
 class TimelineScreen extends StatefulWidget {
@@ -33,10 +34,7 @@ class _TimelineScreenState extends State<TimelineScreen> {
     try {
       final response = await http.get(
         Uri.parse('/api/trips/${widget.tripId}/timeline'),
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOiIwMDViYjJkNC1jODFjLTRiYzQtOTBkNi04Mzg1MTg4OGIyNjEiLCJlbWFpbCI6ImphY2tAdnVsdHIuZ3Vlc3QiLCJpYXQiOjE3NzQ2NjkzMjEsImV4cCI6MTc3NDc1NTcyMX0=.eFPp0yyPw2dq5lA35kVm6gBWqF5qTI55xsvLkhth6Zw='
-        },
+        headers: await _authHeaders(),
       );
 
       if (response.statusCode == 200) {
@@ -65,10 +63,7 @@ class _TimelineScreenState extends State<TimelineScreen> {
     try {
       final response = await http.get(
         Uri.parse('/api/trips/${widget.tripId}/travel-times'),
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOiIwMDViYjJkNC1jODFjLTRiYzQtOTBkNi04Mzg1MTg4OGIyNjEiLCJlbWFpbCI6ImphY2tAdnVsdHIuZ3Vlc3QiLCJpYXQiOjE3NzQ2NjkzMjEsImV4cCI6MTc3NDc1NTcyMX0=.eFPp0yyPw2dq5lA35kVm6gBWqF5qTI55xsvLkhth6Zw='
-        },
+        headers: await _authHeaders(),
       );
 
       if (response.statusCode == 200) {
@@ -148,10 +143,7 @@ class _TimelineScreenState extends State<TimelineScreen> {
               try {
                 final response = await http.post(
                   Uri.parse('/api/trips/${widget.tripId}/timeline'),
-                  headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOiIwMDViYjJkNC1jODFjLTRiYzQtOTBkNi04Mzg1MTg4OGIyNjEiLCJlbWFpbCI6ImphY2tAdnVsdHIuZ3Vlc3QiLCJpYXQiOjE3NzQ2NjkzMjEsImV4cCI6MTc3NDc1NTcyMX0=.eFPp0yyPw2dq5lA35kVm6gBWqF5qTI55xsvLkhth6Zw='
-                  },
+                  headers: await _authHeaders(),
                   body: json.encode({
                     'name': nameController.text,
                     'type': typeController.text,
@@ -190,10 +182,7 @@ class _TimelineScreenState extends State<TimelineScreen> {
     try {
       final response = await http.get(
         Uri.parse('/api/trips/${widget.tripId}/timeline/conflicts'),
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOiIwMDViYjJkNC1jODFjLTRiYzQtOTBkNi04Mzg1MTg4OGIyNjEiLCJlbWFpbCI6ImphY2tAdnVsdHIuZ3Vlc3QiLCJpYXQiOjE3NzQ2NjkzMjEsImV4cCI6MTc3NDc1NTcyMX0=.eFPp0yyPw2dq5lA35kVm6gBWqF5qTI55xsvLkhth6Zw='
-        },
+        headers: await _authHeaders(),
       );
 
       if (response.statusCode == 200) {
@@ -274,10 +263,7 @@ class _TimelineScreenState extends State<TimelineScreen> {
     try {
       final response = await http.put(
         Uri.parse('/api/trips/${widget.tripId}/timeline/reorder'),
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOiIwMDViYjJkNC1jODFjLTRiYzQtOTBkNi04Mzg1MTg4OGIyNjEiLCJlbWFpbCI6ImphY2tAdnVsdHIuZ3Vlc3QiLCJpYXQiOjE3NzQ2NjkzMjEsImV4cCI6MTc3NDc1NTcyMX0=.eFPp0yyPw2dq5lA35kVm6gBWqF5qTI55xsvLkhth6Zw='
-        },
+        headers: await _authHeaders(),
         body: json.encode({'item_orders': itemOrders}),
       );
 
@@ -304,10 +290,7 @@ class _TimelineScreenState extends State<TimelineScreen> {
     try {
       final response = await http.put(
         Uri.parse('/api/trips/${widget.tripId}/timeline/$itemId'),
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOiIwMDViYjJkNC1jODFjLTRiYzQtOTBkNi04Mzg1MTg4OGIyNjEiLCJlbWFpbCI6ImphY2tAdnVsdHIuZ3Vlc3QiLCJpYXQiOjE3NzQ2NjkzMjEsImV4cCI6MTc3NDc1NTcyMX0=.eFPp0yyPw2dq5lA35kVm6gBWqF5qTI55xsvLkhth6Zw='
-        },
+        headers: await _authHeaders(),
         body: json.encode({'locked': isLocked}),
       );
 
@@ -407,10 +390,7 @@ class _TimelineScreenState extends State<TimelineScreen> {
               try {
                 final response = await http.put(
                   Uri.parse('/api/trips/${widget.tripId}/timeline/${item['id']}'),
-                  headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOiIwMDViYjJkNC1jODFjLTRiYzQtOTBkNi04Mzg1MTg4OGIyNjEiLCJlbWFpbCI6ImphY2tAdnVsdHIuZ3Vlc3QiLCJpYXQiOjE3NzQ2NjkzMjEsImV4cCI6MTc3NDc1NTcyMX0=.eFPp0yyPw2dq5lA35kVm6gBWqF5qTI55xsvLkhth6Zw='
-                  },
+                  headers: await _authHeaders(),
                   body: json.encode({
                     'name': nameController.text,
                     'start_time': startTimeController.text,
@@ -457,10 +437,7 @@ class _TimelineScreenState extends State<TimelineScreen> {
               try {
                 final response = await http.delete(
                   Uri.parse('/api/trips/${widget.tripId}/timeline/${item['id']}'),
-                  headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOiIwMDViYjJkNC1jODFjLTRiYzQtOTBkNi04Mzg1MTg4OGIyNjEiLCJlbWFpbCI6ImphY2tAdnVsdHIuZ3Vlc3QiLCJpYXQiOjE3NzQ2NjkzMjEsImV4cCI6MTc3NDc1NTcyMX0=.eFPp0yyPw2dq5lA35kVm6gBWqF5qTI55xsvLkhth6Zw='
-                  },
+                  headers: await _authHeaders(),
                 );
 
                 if (response.statusCode == 200) {
@@ -482,6 +459,15 @@ class _TimelineScreenState extends State<TimelineScreen> {
         ],
       ),
     );
+  }
+
+
+  Future<Map<String, String>> _authHeaders() async {
+    final token = await TokenStorage.getToken();
+    return {
+      'Content-Type': 'application/json',
+      if (token != null) 'Authorization': 'Bearer \$token',
+    };
   }
 
   @override
@@ -851,10 +837,7 @@ class _TimelineScreenState extends State<TimelineScreen> {
     try {
       final response = await http.post(
         Uri.parse('/api/trips/${widget.tripId}/timeline/smart-fill'),
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOiIwMDViYjJkNC1jODFjLTRiYzQtOTBkNi04Mzg1MTg4OGIyNjEiLCJlbWFpbCI6ImphY2tAdnVsdHIuZ3Vlc3QiLCJpYXQiOjE3NzQ2NjkzMjEsImV4cCI6MTc3NDc1NTcyMX0=.eFPp0yyPw2dq5lA35kVm6gBWqF5qTI55xsvLkhth6Zw='
-        },
+        headers: await _authHeaders(),
         body: json.encode({
           'gap_start': gapStart,
           'gap_end': gapEnd,
