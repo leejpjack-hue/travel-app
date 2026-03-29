@@ -51,7 +51,7 @@ class _CollaboratorsScreenState extends State<CollaboratorsScreen> {
     });
 
     try {
-      final url = Uri.parse('http://167.179.88.55:5005/api/trips/${widget.tripId}/collaborators');
+      final url = Uri.parse('/api/trips/${widget.tripId}/collaborators');
       final response = await http.get(
         url,
         headers: {
@@ -88,7 +88,7 @@ class _CollaboratorsScreenState extends State<CollaboratorsScreen> {
     });
 
     try {
-      final url = Uri.parse('http://167.179.88.55:5005/api/trips/${widget.tripId}/collaborators');
+      final url = Uri.parse('/api/trips/${widget.tripId}/collaborators');
       final response = await http.post(
         url,
         headers: {
@@ -128,7 +128,7 @@ class _CollaboratorsScreenState extends State<CollaboratorsScreen> {
     });
 
     try {
-      final url = Uri.parse('http://167.179.88.55:5005/api/trips/${widget.tripId}/collaborators/$collaboratorId');
+      final url = Uri.parse('/api/trips/${widget.tripId}/collaborators/$collaboratorId');
       final response = await http.delete(
         url,
         headers: {

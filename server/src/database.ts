@@ -611,14 +611,14 @@ function insertSampleJapanTickets() {
   if (!database) { console.log("Database not initialized, skipping function"); return; }
   
   try {
-    // Check if tickets already exist
     const existingTickets = database.prepare('SELECT COUNT(*) as count FROM japan_transport_tickets').get();
     if ((existingTickets as any).count > 0) {
       console.log('🎫 Japanese transport tickets already exist, skipping insertion');
       return;
     }
     
-    // Sample JR Pass tickets - FIXED data binding
+    // Temporarily disable foreign keys for sample data insertion
+    database.pragma('foreign_keys = OFF');
     const jrPasses = [
       {
         ticket_name: 'JR Pass 7日券',
@@ -679,13 +679,15 @@ function insertSampleJapanTickets() {
         ticket.validity_days,
         ticket.coverage_areas,
         ticket.conditions,
-        true
+        1
       );
     }
     
     console.log('🎫 Sample Japanese transport tickets inserted successfully');
+    database.pragma('foreign_keys = ON');
   } catch (error) {
     console.error('❌ Failed to insert sample Japanese transport tickets:', error);
+    try { database.pragma('foreign_keys = ON'); } catch {}
   }
 }
 

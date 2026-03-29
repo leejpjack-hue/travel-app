@@ -13,7 +13,7 @@ class LoginScreen extends StatefulWidget {
 }
 
 class _LoginScreenState extends State<LoginScreen> {
-  static const String _serverBase = 'http://167.179.88.55:5005';
+  static const String _serverBase = '';
 
   final _emailController = TextEditingController();
   final _passwordController = TextEditingController();

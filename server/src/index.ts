@@ -108,6 +108,9 @@ app.get('/api/trips', (req, res) => {
 app.post('/api/trips', (req, res) => {
   try {
     const user = getCurrentUser(req) as any;
+    if (!user || !user.id) {
+      return res.status(401).json({ error: 'Invalid user session' });
+    }
     const db = getDatabase();
     const { name, description, destination, start_date, end_date } = req.body;
 
@@ -123,6 +126,7 @@ app.post('/api/trips', (req, res) => {
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?)
     `);
 
+    console.log(`Creating trip: user=${user.id}, name=${name}`);
     stmt.run(id, user.id, name, description || null, destination || null, start_date || null, end_date || null, user.id, now, now);
 
     const trip: any = db.prepare('SELECT * FROM trips WHERE id = ?').get(id);
@@ -517,8 +521,8 @@ app.post('/api/trips/from-template/:templateId', (req, res) => {
 
     // Create trip
     const stmt = db.prepare(`
-      INSERT INTO trips (id, user_id, name, destination, start_date, end_date, preferences, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO trips (id, user_id, name, destination, start_date, end_date, preferences, created_by, status, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?)
     `);
 
     stmt.run(
@@ -529,6 +533,7 @@ app.post('/api/trips/from-template/:templateId', (req, res) => {
       start_date,
       end_date,
       JSON.stringify(template.preferences),
+      user.id,
       now,
       now
     );
@@ -3936,6 +3941,14 @@ app.get('/api/trips/:id/expenses', (req, res) => {
     });
   } catch (error: any) {
     console.error('Expenses API error:', error);
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+app.get('/api/expense-categories', (_req, res) => {
+  try {
+    res.json({ categories: getExpenseCategories() });
+  } catch (error: any) {
     res.status(500).json({ error: error.message || 'Internal server error' });
   }
 });

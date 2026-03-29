@@ -628,7 +628,7 @@ class _InTripScreenState extends State<InTripScreen> {
     setState(() => isLoadingExpenses = false);
   }
 
-  static const String _serverBase = 'http://167.179.88.55:5005';
+  static const String _serverBase = '';
 
   Future<String?> _makeRequest(String method, String url, {Map<String, dynamic>? body}) async {
     final client = http.Client();
