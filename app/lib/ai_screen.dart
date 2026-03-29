@@ -347,216 +347,217 @@ class _AIScreenState extends State<AIScreen> {
                     ),
                   ),
                   SizedBox(width: 12),
-                      GestureDetector(
-                        onTap: _sendMessage,
-                        child: Container(
-                          width: 48,
-                          height: 48,
-                          decoration: BoxDecoration(
-                            color: Color(0xFF9b59b6),
-                            borderRadius: BorderRadius.circular(24),
-                          ),
-                          child: Icon(
-                            Icons.send,
-                            color: Colors.white,
-                            size: 24,
-                          ),
-                        ),
+                  GestureDetector(
+                    onTap: _sendMessage,
+                    child: Container(
+                      width: 48,
+                      height: 48,
+                      decoration: BoxDecoration(
+                        color: Color(0xFF9b59b6),
+                        borderRadius: BorderRadius.circular(24),
                       ),
-                    ],
+                      child: Icon(
+                        Icons.send,
+                        color: Colors.white,
+                        size: 24,
+                      ),
+                    ),
                   ),
-                ),
+                ],
               ),
-            ],
-          );
-        }
-
-        Widget _buildMessageBubble(Map<String, dynamic> message) {
-          final isUser = message['type'] == 'user';
-          return Container(
-            margin: EdgeInsets.only(bottom: 16),
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                if (!isUser) ...[
-                  Container(
-                    width: 32,
-                    height: 32,
-                    decoration: BoxDecoration(
-                      color: Color(0xFF9b59b6),
-                      borderRadius: BorderRadius.circular(16),
-                    ),
-                    child: Icon(
-                      Icons.smart_toy,
-                      color: Colors.white,
-                      size: 16,
-                    ),
-                  ),
-                  SizedBox(width: 12),
-                ],
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Container(
-                        padding: EdgeInsets.all(16),
-                        decoration: BoxDecoration(
-                          color: isUser 
-                            ? Color(0xFF9b59b6)
-                            : Colors.grey[100],
-                          borderRadius: BorderRadius.circular(16),
-                        ),
-                        child: Text(
-                          message['content'],
-                          style: TextStyle(
-                            color: isUser ? Colors.white : Colors.black87,
-                            fontSize: 14,
-                            height: 1.5,
-                          ),
-                        ),
-                      ),
-                      if (message['suggestions'] != null && message['suggestions'].isNotEmpty)
-                        Container(
-                          margin: EdgeInsets.only(top: 8),
-                          padding: EdgeInsets.all(12),
-                          decoration: BoxDecoration(
-                            color: Colors.blue[50],
-                            borderRadius: BorderRadius.circular(12),
-                            border: Border.all(color: Color(0xFF3498db)),
-                          ),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                '建議方案：',
-                                style: TextStyle(
-                                  fontWeight: FontWeight.bold,
-                                  color: Color(0xFF2c3e50),
-                                ),
-                              ),
-                              SizedBox(height: 8),
-                              ...message['suggestions'].map((suggestion) => 
-                                Padding(
-                                  padding: EdgeInsets.only(bottom: 8),
-                                  child: Row(
-                                    children: [
-                                      Icon(
-                                        _getSuggestionIcon(suggestion['type']),
-                                        color: Color(0xFF3498db),
-                                        size: 16,
-                                      ),
-                                      SizedBox(width: 8),
-                                      Expanded(
-                                        child: Text(
-                                          '${_getSuggestionTitle(suggestion['action'])}: ${suggestion['details']['description'] ?? '無描述'}',
-                                          style: TextStyle(
-                                            color: Color(0xFF2c3e50),
-                                            fontSize: 12,
-                                          ),
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                              ).toList(),
-                            ],
-                          ),
-                        ),
-                      SizedBox(height: 4),
-                      Text(
-                        _formatTime(message['timestamp']),
-                        style: TextStyle(
-                          color: Colors.grey[500],
-                          fontSize: 11,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                if (isUser) ...[
-                  SizedBox(width: 12),
-                  Container(
-                    width: 32,
-                    height: 32,
-                    decoration: BoxDecoration(
-                      color: Color(0xFF9b59b6),
-                      borderRadius: BorderRadius.circular(16),
-                    ),
-                    child: Icon(
-                      Icons.person,
-                      color: Colors.white,
-                      size: 16,
-                    ),
-                  ),
-                ],
-              ],
             ),
-          );
-        }
+          ),
+        ],
+      ),
+    );
+  }
 
-        Widget _buildTypingIndicator() {
-          return Container(
-            margin: EdgeInsets.only(bottom: 16),
-            child: Row(
+  Widget _buildMessageBubble(Map<String, dynamic> message) {
+    final isUser = message['type'] == 'user';
+    return Container(
+      margin: EdgeInsets.only(bottom: 16),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (!isUser) ...[
+            Container(
+              width: 32,
+              height: 32,
+              decoration: BoxDecoration(
+                color: Color(0xFF9b59b6),
+                borderRadius: BorderRadius.circular(16),
+              ),
+              child: Icon(
+                Icons.smart_toy,
+                color: Colors.white,
+                size: 16,
+              ),
+            ),
+            SizedBox(width: 12),
+          ],
+          Expanded(
+            child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Container(
-                  width: 32,
-                  height: 32,
+                  padding: EdgeInsets.all(16),
                   decoration: BoxDecoration(
-                    color: Color(0xFF9b59b6),
+                    color: isUser 
+                      ? Color(0xFF9b59b6)
+                      : Colors.grey[100],
                     borderRadius: BorderRadius.circular(16),
                   ),
-                  child: Icon(
-                    Icons.smart_toy,
-                    color: Colors.white,
-                    size: 16,
+                  child: Text(
+                    message['content'],
+                    style: TextStyle(
+                      color: isUser ? Colors.white : Colors.black87,
+                      fontSize: 14,
+                      height: 1.5,
+                    ),
                   ),
                 ),
-                SizedBox(width: 12),
-                Expanded(
-                  child: Container(
-                    padding: EdgeInsets.all(16),
+                if (message['suggestions'] != null && message['suggestions'].isNotEmpty)
+                  Container(
+                    margin: EdgeInsets.only(top: 8),
+                    padding: EdgeInsets.all(12),
                     decoration: BoxDecoration(
-                      color: Colors.grey[100],
-                      borderRadius: BorderRadius.circular(16),
+                      color: Colors.blue[50],
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: Color(0xFF3498db)),
                     ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Container(
-                          width: 8,
-                          height: 8,
-                          decoration: BoxDecoration(
-                            color: Color(0xFF9b59b6),
-                            borderRadius: BorderRadius.circular(4),
+                        Text(
+                          '建議方案：',
+                          style: TextStyle(
+                            fontWeight: FontWeight.bold,
+                            color: Color(0xFF2c3e50),
                           ),
                         ),
-                        SizedBox(width: 4),
-                        Container(
-                          width: 8,
-                          height: 8,
-                          decoration: BoxDecoration(
-                            color: Color(0xFF9b59b6),
-                            borderRadius: BorderRadius.circular(4),
+                        SizedBox(height: 8),
+                        ...message['suggestions'].map((suggestion) => 
+                          Padding(
+                            padding: EdgeInsets.only(bottom: 8),
+                            child: Row(
+                              children: [
+                                Icon(
+                                  _getSuggestionIcon(suggestion['type']),
+                                  color: Color(0xFF3498db),
+                                  size: 16,
+                                ),
+                                SizedBox(width: 8),
+                                Expanded(
+                                  child: Text(
+                                    '${_getSuggestionTitle(suggestion['action'])}: ${suggestion['details']['description'] ?? '無描述'}',
+                                    style: TextStyle(
+                                      color: Color(0xFF2c3e50),
+                                      fontSize: 12,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
                           ),
-                        ),
-                        SizedBox(width: 4),
-                        Container(
-                          width: 8,
-                          height: 8,
-                          decoration: BoxDecoration(
-                            color: Color(0xFF9b59b6),
-                            borderRadius: BorderRadius.circular(4),
-                          ),
-                        ),
+                        ).toList(),
                       ],
                     ),
+                  ),
+                SizedBox(height: 4),
+                Text(
+                  _formatTime(message['timestamp']),
+                  style: TextStyle(
+                    color: Colors.grey[500],
+                    fontSize: 11,
                   ),
                 ),
               ],
             ),
-          );
+          ),
+          if (isUser) ...[
+            SizedBox(width: 12),
+            Container(
+              width: 32,
+              height: 32,
+              decoration: BoxDecoration(
+                color: Color(0xFF9b59b6),
+                borderRadius: BorderRadius.circular(16),
+              ),
+              child: Icon(
+                Icons.person,
+                color: Colors.white,
+                size: 16,
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+        }
+
+  Widget _buildTypingIndicator() {
+    return Container(
+      margin: EdgeInsets.only(bottom: 16),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            width: 32,
+            height: 32,
+            decoration: BoxDecoration(
+              color: Color(0xFF9b59b6),
+              borderRadius: BorderRadius.circular(16),
+            ),
+            child: Icon(
+              Icons.smart_toy,
+              color: Colors.white,
+              size: 16,
+            ),
+          ),
+          SizedBox(width: 12),
+          Expanded(
+            child: Container(
+              padding: EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: Colors.grey[100],
+                borderRadius: BorderRadius.circular(16),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Container(
+                    width: 8,
+                    height: 8,
+                    decoration: BoxDecoration(
+                      color: Color(0xFF9b59b6),
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                  ),
+                  SizedBox(width: 4),
+                  Container(
+                    width: 8,
+                    height: 8,
+                    decoration: BoxDecoration(
+                      color: Color(0xFF9b59b6),
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                  ),
+                  SizedBox(width: 4),
+                  Container(
+                    width: 8,
+                    height: 8,
+                    decoration: BoxDecoration(
+                      color: Color(0xFF9b59b6),
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
         }
 
         String _formatTime(dynamic timestamp) {
