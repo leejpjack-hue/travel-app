@@ -1,0 +1,12 @@
+{
+  "instructions": [
+    {
+      "pattern": "app/lib/**/*.dart",
+      "file": ".opencode/rules/flutter.md"
+    },
+    {
+      "pattern": "server/src/**/*.ts",
+      "file": ".opencode/rules/backend.md"
+    }
+  ]
+}
